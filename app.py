@@ -30,8 +30,14 @@ def call_gemini(api_key, prompt):
             "parts": [{"text": prompt}]
         }]
     }
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    return response.json()
+    try:
+        # 超时时间放宽至 90 秒，避免长文本生成时超时熔断
+        response = requests.post(url, headers=headers, json=payload, timeout=90)
+        return response.json(), None
+    except requests.exceptions.Timeout:
+        return None, "模型深度推演计算超时（超过90秒），请稍后重试或简化查询词。"
+    except Exception as e:
+        return None, f"调用接口网络异常: {str(e)}"
 
 def fetch_odds_data(api_key, sport="soccer_epl"):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
@@ -41,8 +47,11 @@ def fetch_odds_data(api_key, sport="soccer_epl"):
         "markets": "h2h,totals",
         "oddsFormat": "decimal"
     }
-    response = requests.get(url, params=params, timeout=15)
-    return response.json()
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        return response.json()
+    except Exception:
+        return None
 
 # 主操作区
 match_input = st.text_input("🔍 输入对阵球队（如：阿森纳、曼联、拉脱维亚 VS 黑山）", placeholder="输入比赛或球队关键词")
@@ -52,15 +61,12 @@ if btn_predict:
     if not gemini_api_key:
         st.error("请先在左侧侧边栏填入 Gemini API Key！")
     else:
-        with st.spinner("正在获取做市商实时数据并执行量化深度推演..."):
+        with st.spinner("正在获取做市商实时数据并执行量化深度推演（计算中，请稍候）..."):
             market_context = "未配置 Odds Key 或暂无外部盘口数据，基于模型内置量化数学模型分析"
             if odds_api_key:
-                try:
-                    odds_data = fetch_odds_data(odds_api_key)
-                    if isinstance(odds_data, list):
-                        market_context = json.dumps(odds_data[:3], ensure_ascii=False)
-                except Exception as e:
-                    market_context = f"盘口数据拉取异常: {str(e)}"
+                odds_data = fetch_odds_data(odds_api_key)
+                if isinstance(odds_data, list):
+                    market_context = json.dumps(odds_data[:3], ensure_ascii=False)
 
             prompt = f"""
 你是一名专业足球赛事量化分析师，严格按照以下要求进行深度推演并输出，核心结论必须明确、不模棱两可：
@@ -85,9 +91,11 @@ if btn_predict:
 - 价值投注（Value Bet）空间评估与风险预警。
 """
 
-            res_json = call_gemini(gemini_api_key, prompt)
+            res_json, error_msg = call_gemini(gemini_api_key, prompt)
 
-            if "candidates" in res_json:
+            if error_msg:
+                st.warning(error_msg)
+            elif res_json and "candidates" in res_json:
                 try:
                     result_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
                     st.success("✅ 量化分析推演完成！")
