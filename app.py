@@ -9,7 +9,7 @@ from datetime import datetime
 
 # ================= 页面配置 =================
 st.set_page_config(
-    page_title="OmniQuant 足球量化决策与风控中枢",
+    page_title="OmniQuant 工业级足球量化预测中枢",
     page_icon="⚽",
     layout="wide"
 )
@@ -43,7 +43,7 @@ def poisson_pmf(k, lmbda):
         return 1.0 if k == 0 else 0.0
     return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
-def compute_match_probabilities(home_xg=1.45, away_xg=1.15, max_goals=6):
+def compute_match_probabilities(home_xg=1.40, away_xg=1.10, max_goals=6):
     """
     通过双变量泊松网格计算 1X2 与进球数无偏概率矩阵
     """
@@ -71,29 +71,11 @@ def compute_match_probabilities(home_xg=1.45, away_xg=1.15, max_goals=6):
         "goals": {k: round(v * 100, 2) for k, v in total_goals_dist.items() if k <= 6}
     }
 
-def calculate_kelly_stake(prob_pct, decimal_odds, fraction=0.25):
-    """
-    0.25x 分数凯利公式：f* = (b*p - q) / b * fraction
-    """
-    if decimal_odds <= 1.0:
-        return 0.0, 0.0
-    p = prob_pct / 100.0
-    q = 1.0 - p
-    b = decimal_odds - 1.0
-    ev = (p * decimal_odds) - 1.0
-    
-    if ev <= 0:
-        return round(ev * 100, 2), 0.0
-    
-    f_star = (b * p - q) / b
-    suggested_stake = max(0.0, f_star * fraction) * 100
-    return round(ev * 100, 2), round(min(suggested_stake, 5.0), 2)  # 单注最高硬限 5%
-
 # ================= 侧边栏：系统管理 =================
 with st.sidebar:
     st.header("⚙️ 量化配置与风控")
     bankroll = st.number_input("实战风控总本金 (单位: 元/USD)", min_value=1000, value=20000, step=1000)
-    st.caption("基于 0.25x 凯利准则自动计算建议开仓金额")
+    st.caption("基于 0.25x 凯利准则自动计算单场建议开仓金额")
     st.markdown("---")
     gemini_key_input = st.text_input("Gemini API Key (可选)", type="password")
     odds_key_input = st.text_input("The Odds API Key (可选)", type="password")
@@ -160,7 +142,7 @@ tab1, tab2, tab3 = st.tabs(["🚀 实时双核量化推演", "📋 历史对账�
 
 # ----------------- Tab 1: 实时推演 -----------------
 with tab1:
-    st.subheader("⚽ 赛事微观结构与数学双核决策引擎")
+    st.subheader("⚽ 赛事微观结构与剧本突变决策引擎")
     
     col_in1, col_in2 = st.columns([1, 1])
     with col_in1:
@@ -179,26 +161,40 @@ with tab1:
         elif not match_input and not uploaded_img:
             st.warning("请至少输入对阵球队，或上传一张盘口走势截图！")
         else:
-            with st.spinner("双核引擎运行中：[Python 确定性泊松矩阵] + [Gemini 多模态反操盘审查]..."):
-                # 1. 运行本地数学基准模拟
+            with st.spinner("双核引擎运作中：[泊松数学矩阵] + [微观操盘四模式归类] + [Game-State 突变演进]..."):
                 math_baseline = compute_match_probabilities(1.40, 1.05)
 
-                # 2. 构建工业级 Prompt 协议
                 prompt = f"""
-你是一名顶级体育对冲基金量化交易总监，精通做市商微观结构博弈、Shin 去抽水模型、Dixon-Coles 矩阵与 0.25x 凯利仓位管理。
+你是一名顶级体育对冲基金首席量化研究员，精通做市商微观结构博弈、Shin 去抽水模型与 Game-State 突变推演。
 现对以下赛事启动深度交易研判：
 
-【赛事信息】：{match_input if match_input else '详见上传截图对阵'}
-【数理基准矩阵参考】：
-- 本地泊松理论概率：主胜 {math_baseline['home_win']}% | 平局 {math_baseline['draw']}% | 客胜 {math_baseline['away_win']}%
+【赛事信息】：{match_input if match_input else '详见上传截图中的赛事对阵'}
+【本地数理基准概率】：
+- 泊松理论分布：主胜 {math_baseline['home_win']}% | 平局 {math_baseline['draw']}% | 客胜 {math_baseline['away_win']}%
 - 进球数理论离散度：0球({math_baseline['goals'].get(0)}%), 1球({math_baseline['goals'].get(1)}%), 2球({math_baseline['goals'].get(2)}%), 3球({math_baseline['goals'].get(3)}%)
 
-【执行与审查铁律】：
-1. 深度研判上传截图中展示的平博（Pinnacle）、皇冠（Crown）、利记（SBOBET）等主流机构初终盘水位升降、让球幅度调整及必发资金冷热指数。
-2. 严禁模棱两可！严禁推卸预测！结论必须坚定且单一，各项预测必须给出精确置信度。
-3. 严格遵循以下输出结构：
+【必须执行的最高分析铁律】：
+1. **微观做市商操盘模式必须强制定性（必须明确标出以下 4 种之一）**：
+   - 【模式A：浅盘低水诱热】（基本面名气大但让步浅、低水赔付阻力极小，散户扎堆，机构冷门防守）
+   - 【模式B：借题材逆向阻盘】（基本面有微弱利空，机构顺水推舟退盘升水制造不稳假象，降低真实打出赔付）
+   - 【模式C：职业大单扫盘 (Steam)】（多机构短时间内同步剧烈降水降盘，真实热钱砸盘）
+   - 【模式D：多空分歧·中立水钱对冲】（盘面平衡，无异常退盘或水位异动）
+2. **必须引入 Game-State（比赛突变剧本树）进行压力测试**：
+   - 严禁假定比赛永远均势！必须推演：若弱队/客队在上半场意外先进一球，强队压上反扑对全场比分与进球数的膨胀破坏力！
+3. **输出结论必须唯一、坚定，严禁模棱两可！**
 
-### 一、核心预测结论（量化置信度与执行指令）
+请严格按照以下工业化格式输出报告：
+
+### 一、做市商操盘定性与微观结构
+- **做市商操盘模式归类**：明确标出属于【模式A / 模式B / 模式C / 模式D】中的哪一种，并说明理由。
+- **平博/皇冠/利记异动解析**：初终盘变轨、升降水幅度与去抽水后真实胜率对比。
+- **必发成交冷热**：成交量分布是否存在诱盘或多空分歧。
+
+### 二、Game-State 比赛剧本突变演进
+- **基准剧本态（均势）**：双方正常节奏下的攻防胶着度。
+- **破局突变态（压力测试）**：若客队/下盘方率先进球，强队阵型前倾对防反及总进球数扩大的风险评估。
+
+### 三、核心预测结论（量化置信度与指令）
 1. **欧盘胜平负**：
    - 核心结论：明确给出【主胜】、【平局】或【客胜】（单一选项）
    - 预测置信度：XX%
@@ -210,19 +206,10 @@ with tab1:
    - 进球数推荐一：X 球（置信度：XX%）
    - 进球数推荐二：X 球（置信度：XX%）
 
-### 二、0.25x 分数凯利风控与仓位指引
-- **核心价值投资项（Value Bet）**：指出全场最具数学正期望（+EV）的具体投注项与预期赔率。
-- **动态期望值评估**：$\text{{EV}} = p \times b - 1$（明确给出预估 EV 百分比）。
-- **0.25x 凯利建议仓位**：建议下注总资金比例（如 1.5%~2.5%，若 EV 为负则明确提示【放弃下注/0%】）。
-
-### 三、做市商微观结构与筹码异动解构
-- 亚盘初终盘变轨轨迹（阻盘/诱盘意图判定）。
-- 平博去抽水隐含概率与皇冠极限防守水位对比。
-- 必发成交量、大额挂单对冲与资金冷热偏差。
-
-### 四、战术基本面与攻防 xG 期望推演
-- 风格克制与关键攻防效率。
-- 最可能打出的比分分布众数（Poisson 分布）。
+### 四、0.25x 凯利风控与实战仓位建议
+- **核心价值投资项（Value Bet）**：指出全场最具数学正期望（+EV）的单一投注项。
+- **动态期望值评估**：估算 $\\text{{EV}} = p \\times b - 1$。
+- **0.25x 凯利建议仓位**：明确给出建议开仓比例（如 1.5%~2.5%，若 EV 为负则给出 0% 放弃）。
 """
 
                 img_bytes = uploaded_img.getvalue() if uploaded_img else None
@@ -236,10 +223,9 @@ with tab1:
                 )
 
                 if result_text:
-                    st.success(f"✅ 双核量化推演完成！（计算节点：{used_model}）")
+                    st.success(f"✅ 工业级双核量化推演完成！（计算节点：{used_model}）")
                     st.markdown(result_text)
 
-                    # 自动记账归档
                     display_name = match_input if match_input else "核心焦点赛事（截图解析）"
                     new_record = {
                         "id": int(time.time()),
@@ -250,7 +236,6 @@ with tab1:
                         "status": "待结算",
                         "final_score": "",
                         "clv_beaten": "待测算",
-                        "stake_advised": "参见报告",
                         "notes": ""
                     }
                     st.session_state.records.insert(0, new_record)
