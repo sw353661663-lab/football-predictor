@@ -49,7 +49,7 @@ if st.button("🚀 执行量化深度分析", use_container_width=True):
             3. 附带50字以内做市商盘口与主力筹码异动简要依据。
             """
 
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}"
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}]
             }
