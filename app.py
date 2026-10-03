@@ -10,14 +10,14 @@ from datetime import datetime
 
 # ================= 页面配置 =================
 st.set_page_config(
-    page_title="OmniQuant Cortex 全自动自进化量化研判中枢",
+    page_title="OmniQuant Cortex 竞彩量化研判与自进化中枢",
     page_icon="⚽",
     layout="wide"
 )
 
 DATA_FILE = "prediction_history.json"
 RULES_FILE = "rules_vault.json"
-MAX_RULES_CAPACITY = 8  # 黄金军规容量上限，杜绝上下文污染
+MAX_RULES_CAPACITY = 8  # 黄金军规容量上限
 
 # ================= 数据与军规持久化层 =================
 def load_history():
@@ -60,7 +60,6 @@ def save_rules(rules, last_evolved_count=0):
     except Exception as e:
         st.error(f"军规存档异常: {str(e)}")
 
-# 状态安全独立初始化
 if "records" not in st.session_state:
     st.session_state.records = load_history()
 
@@ -70,15 +69,13 @@ if "rules" not in st.session_state:
 if "last_evolved_count" not in st.session_state:
     st.session_state.last_evolved_count = r_cnt
 
-# ================= 确定性数学层：动态泊松与战力求解器 =================
+# ================= 确定性数学层：动态泊松求解器 =================
 def poisson_pmf(k, lmbda):
-    """泊松分布单点概率"""
     if lmbda <= 0:
         return 1.0 if k == 0 else 0.0
     return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
-def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
-    """根据盘口基准线与让球深度，数值反解两队预期进球 xG"""
+def compute_dynamic_match_matrix(total_line=2.5, spread=-0.5, max_goals=6):
     home_xg = max(0.2, (total_line - spread) / 2.0)
     away_xg = max(0.2, (total_line + spread) / 2.0)
 
@@ -113,7 +110,7 @@ def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
         "top_scores": sorted_scores
     }
 
-# ================= The Odds API 机构数据抓取 =================
+# ================= 真实 The Odds API 机构数据抓取 =================
 def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
     if not api_key:
         return None, "未配置 Odds API Key"
@@ -126,10 +123,12 @@ def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
     except Exception as e:
         return None, f"网络异常: {str(e)}"
 
-# ================= 纯 Python 本地精准核销引擎（防倒挂加固版） =================
-def evaluate_score_locally(report_text, score_str, record_spread=-0.25):
+# ================= 纯 Python 本地精准核销引擎（竞彩官方规则标准版） =================
+def evaluate_score_locally(report_text, score_str, record_jc_handicap=-1):
     """
-    100% 本地运算：定点锚定匹配，彻底修复倒挂误判漏洞
+    100% 竞彩官方规则本地结算：
+    主队进球 + 竞彩让球数 vs 客队进球 -> 判定【让胜 / 让平 / 让负】
+    自带 Markdown 格式清洗，杜绝加粗符号导致的解析失误
     """
     if not score_str:
         return None, "比分未输入"
@@ -137,48 +136,71 @@ def evaluate_score_locally(report_text, score_str, record_spread=-0.25):
     clean_score = score_str.strip().replace('：', ':').replace(':', '-')
     m_score = re.search(r'(\d+)\s*[-]\s*(\d+)', clean_score)
     if not m_score:
-        return None, "比分格式无效，请输入如 1-1 或 1-2"
+        return None, "比分格式无效，请输入如 1-1 或 2-1"
     
     h_goals = int(m_score.group(1))
     a_goals = int(m_score.group(2))
     total_goals = h_goals + a_goals
     
-    # 1. 真实赛果换算
+    # 纯净文本，彻底排除 markdown 语法干扰
+    clean_rep = report_text.replace('**', '').replace('__', '')
+    
+    # 1. 欧盘胜平负核销
     actual_1x2 = "主胜" if h_goals > a_goals else ("平局" if h_goals == a_goals else "客胜")
     
-    # 2. 定点精准提取欧盘预测（优先抓取带有明确标记的结论）
     pred_1x2 = None
-    m_ox_target = re.search(r'欧盘(?:胜平负)?.*?核心结论[：:\s]*[【\[(]?([主客]胜|平局)[】\])]?', report_text)
+    m_ox_target = re.search(r'欧盘(?:胜平负)?[^\n]*?核心结论[^\n]{0,20}?([主客]胜|平局)', clean_rep)
     if m_ox_target:
         pred_1x2 = m_ox_target.group(1)
     else:
-        m_ox_sec = re.search(r'(?:欧盘|胜平负).*?(?=(?:让球|亚盘|大小球|总进球|###|\Z))', report_text, re.DOTALL)
-        sec_text = m_ox_sec.group(0) if m_ox_sec else report_text
+        m_ox_sec = re.search(r'(?:欧盘|胜平负).*?(?=(?:让球|竞彩|总进球|###|\Z))', clean_rep, re.DOTALL)
+        sec_text = m_ox_sec.group(0) if m_ox_sec else clean_rep
         m_b = re.search(r'[【\[]([主客]胜|平局)[】\]]', sec_text)
         if m_b:
             pred_1x2 = m_b.group(1)
-        else:
-            if "核心结论" in sec_text:
-                after_core = sec_text.split("核心结论")[-1][:50]
-                for opt in ["主胜", "客胜", "平局"]:
-                    if opt in after_core:
-                        pred_1x2 = opt
-                        break
 
-    audit_1x2 = "未命中"
-    if pred_1x2 and pred_1x2 == actual_1x2:
-        audit_1x2 = "已命中"
+    audit_1x2 = "已命中" if (pred_1x2 and pred_1x2 == actual_1x2) else "未命中"
 
-    # 3. 定点精准提取进球数两选（杜绝前瞻战绩数字干扰）
+    # 2. 竞彩让球胜平负核销（官方算法）
+    jc_handicap = record_jc_handicap
+    m_h_in_rep = re.search(r'让球(?:盘口|数)?[：:\s]*[【\[(]?(?:主|客)?([+-]?\d+)[】\])]?', clean_rep)
+    if m_h_in_rep and record_jc_handicap is None:
+        try:
+            jc_handicap = int(m_h_in_rep.group(1))
+        except Exception:
+            pass
+
+    eff_diff = (h_goals + jc_handicap) - a_goals
+    if eff_diff > 0:
+        actual_handicap = "让胜"
+    elif eff_diff == 0:
+        actual_handicap = "让平"
+    else:
+        actual_handicap = "让负"
+
+    pred_handicap = None
+    m_hd_target = re.search(r'(?:竞彩让球|让球胜平负)[^\n]*?核心结论[^\n]{0,20}?(让[胜平负])', clean_rep)
+    if m_hd_target:
+        pred_handicap = m_hd_target.group(1)
+    else:
+        m_hand_sec = re.search(r'(?:竞彩让球|让球胜平负).*?(?=(?:大小球|总进球|欧盘|###|\Z))', clean_rep, re.DOTALL)
+        hd_text = m_hand_sec.group(0) if m_hand_sec else clean_rep
+        m_hb = re.search(r'[【\[](让[胜平负])[】\]]', hd_text)
+        if m_hb:
+            pred_handicap = m_hb.group(1)
+
+    audit_handicap = "已命中" if (pred_handicap and pred_handicap == actual_handicap) else "未命中"
+
+    # 3. 双选总进球数核销
     goals_nums = []
-    m_g1 = re.search(r'推荐[一1][：:\s]*(\d)\s*球', report_text)
-    m_g2 = re.search(r'推荐[二2][：:\s]*(\d)\s*球', report_text)
+    m_g1 = re.search(r'推荐[一1][^\n]{0,10}?(\d)\s*球', clean_rep)
+    m_g2 = re.search(r'推荐[二2][^\n]{0,10}?(\d)\s*球', clean_rep)
     if m_g1: goals_nums.append(int(m_g1.group(1)))
     if m_g2: goals_nums.append(int(m_g2.group(1)))
     
     if not goals_nums:
-        m_goals_sec = re.search(r'(?:大小球|总进球数|进球数).*?(?=(?:###|四、|0\.25x|\Z))', report_text, re.DOTALL)
-        g_text = m_goals_sec.group(0) if m_goals_sec else report_text
+        m_goals_sec = re.search(r'(?:总进球数|双选总进球).*?(?=(?:###|四、|\Z))', clean_rep, re.DOTALL)
+        g_text = m_goals_sec.group(0) if m_goals_sec else clean_rep
         bracket_goals = re.findall(r'[【\[](\d)\s*球[】\]]', g_text)
         if bracket_goals:
             goals_nums = [int(x) for x in bracket_goals[:2]]
@@ -190,44 +212,17 @@ def evaluate_score_locally(report_text, score_str, record_spread=-0.25):
                     goals_nums.append(val)
             goals_nums = goals_nums[:2]
 
-    audit_goals = "未命中"
-    if goals_nums and total_goals in goals_nums:
-        audit_goals = "已命中"
+    audit_goals = "已命中" if (goals_nums and total_goals in goals_nums) else "未命中"
 
-    # 4. 定点精准提取让球盘预测
-    pred_handicap = None
-    m_hd_target = re.search(r'(?:亚盘|让球).*?核心结论[：:\s]*[【\[(]?([让受]?[胜平负]|走盘)[】\])]?', report_text)
-    if m_hd_target:
-        pred_handicap = m_hd_target.group(1)
-    else:
-        m_hand_sec = re.search(r'(?:让球|亚盘).*?(?=(?:大小球|总进球|欧盘|###|\Z))', report_text, re.DOTALL)
-        hd_text = m_hand_sec.group(0) if m_hand_sec else report_text
-        m_hb = re.search(r'[【\[]([让受]?[胜平负]|走盘)[】\]]', hd_text)
-        if m_hb:
-            pred_handicap = m_hb.group(1)
-
-    # 结合记录中的实际盘口深度进行让球核销
-    h_adj = record_spread
-    diff = (h_goals + h_adj) - a_goals
-    if diff > 0: actual_handicap = "让胜"
-    elif diff == 0: actual_handicap = "让平"
-    else: actual_handicap = "让负"
-
-    audit_handicap = "未命中"
-    if pred_handicap:
-        if pred_handicap == actual_handicap:
-            audit_handicap = "已命中"
-        elif diff == 0 and "走盘" in pred_handicap:
-            audit_handicap = "走盘"
-
-    # 5. 三维总体成色
+    # 4. 综合评级
     hits = (1 if audit_1x2 == "已命中" else 0) + (1 if audit_handicap == "已命中" else 0) + (1 if audit_goals == "已命中" else 0)
     if hits == 3: comp_status = "全红极佳 (3/3)"
     elif hits == 2: comp_status = "双红达标 (2/3)"
     elif hits == 1: comp_status = "单红偏离 (1/3)"
     else: comp_status = "全黑盲区 (0/3)"
 
-    summary = f"完场 {h_goals}-{a_goals} | 欧盘[{pred_1x2 or '已提取'}->{actual_1x2}:{audit_1x2}] | 让球[{pred_handicap or '已提取'}->{actual_handicap}:{audit_handicap}] | 进球[{goals_nums}->{total_goals}球:{audit_goals}]"
+    h_sign = f"+{jc_handicap}" if jc_handicap > 0 else f"{jc_handicap}"
+    summary = f"完场 {h_goals}-{a_goals} | 欧盘[{pred_1x2 or '已提取'}->{actual_1x2}:{audit_1x2}] | 竞彩让球({h_sign})[{pred_handicap or '已提取'}->{actual_handicap}:{audit_handicap}] | 进球[{goals_nums}->{total_goals}球:{audit_goals}]"
 
     return {
         "final_score": f"{h_goals}-{a_goals}",
@@ -240,7 +235,7 @@ def evaluate_score_locally(report_text, score_str, record_spread=-0.25):
 
 # ================= 侧边栏：系统配置与军规记忆库 =================
 with st.sidebar:
-    st.header("🎯 高胜率自进化中枢")
+    st.header("🎯 竞彩高胜率自进化中枢")
     st.info(f"🛡️ 黄金军规池容量：**{len(st.session_state.rules)} / {MAX_RULES_CAPACITY} 条**")
     st.caption("机制：每满 5 场失误，系统后台静默自动迭代更新。")
     st.markdown("---")
@@ -282,19 +277,18 @@ with st.sidebar:
         except Exception as e:
             st.error(f"恢复异常: {str(e)}")
 
-# 安全读取 Secrets（杜绝 FileNotFoundError 崩溃）
 def get_secret(key, default=""):
     try:
-        if key in st.secrets:
+        if key in st.secrets and str(st.secrets[key]).strip():
             return str(st.secrets[key]).strip()
     except Exception:
         pass
-    return default
+    return default.strip() if default else ""
 
 gemini_api_key = get_secret("GEMINI_API_KEY", gemini_key_input)
 odds_api_key = get_secret("ODDS_API_KEY", odds_key_input)
 
-# ================= 多模型调度：锁定 gemini-3.8-flash (阶梯式重试 + 手机图片容错) =================
+# ================= 多模型调度：锁定 gemini-3.8-flash (阶梯式耐受重试) =================
 def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False):
     candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash"]
     headers = {"Content-Type": "application/json"}
@@ -302,7 +296,6 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
     parts = [{"text": prompt}]
     if images_payload:
         for img_bytes, mime_type in images_payload:
-            # 兼容手机相册上传的异常 MIME 类型
             safe_mime = mime_type if mime_type and mime_type.startswith("image/") else "image/jpeg"
             img_b64 = base64.b64encode(img_bytes).decode("utf-8")
             parts.append({
@@ -345,33 +338,32 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
                 continue
     return None, None, last_err
 
-# ================= 本地纯 Python 全维度综合归因引擎 =================
+# ================= 竞彩综合归因引擎 =================
 def generate_comprehensive_local_attribution(records):
     cases = []
     for r in records[:8]:
-        cases.append(f"• 赛事【{r.get('match')}】 终场 {r.get('final_score')} | 欧盘[{r.get('audit_1x2')}] | 让球[{r.get('audit_handicap')}] | 进球数[{r.get('audit_goals')}]")
+        cases.append(f"• 赛事【{r.get('match')}】 终场 {r.get('final_score')} | 欧盘[{r.get('audit_1x2')}] | 竞彩让球[{r.get('audit_handicap')}] | 进球数[{r.get('audit_goals')}]")
     cases_str = "\n".join(cases)
 
     rules_extracted = [
-        "【让球防诱盘铁律】当强队欧赔终盘维持极低水且未见实质上涨，主流亚盘却从半球退至平半（或一球退半一）时，判定为做市商借题材阻上减亏，严禁选让负，必须单选正路以保命中率。",
-        "【必发资金顺势律】必发散户成交向受让下盘倾斜超 70%，但平博、皇冠临场 30 分钟逆势降水强队，一票否决让球受让选项，强制顺应做市商防守方向。",
-        "【进球数防穿铁律】凡受让方定位球反击转化率高、且双方近期失球率高于联赛均值的比赛，大小球严禁推 Under 2.25 以下，进球数双选必须向 2球/3球 偏移并严禁选 0球/1球。",
-        "【联合自洽一致律】欧盘、让球盘与进球数两选必须严格通过联合比分泊松矩阵检验，严禁出现互斥选项（如欧盘推主胜、进球推1球却让球推让平），杜绝认知割裂造成的连带失误。",
-        "【顶级把握锚定律】推演报告必须在第四节确立单一全场最高把握主推（Top Pick），锁定置信度最高的一项，不给任何模棱两可空间。"
+        "【竞彩让球防诱铁律】当强队欧赔低至 1.35 以下但竞彩让1球（-1）让胜赔率高于 2.10 且持续顶升时，严禁单博让胜，判定为赢球输盘格局，果断首选让平或让负。",
+        "【竞彩让平捕获铁律】双方欧赔处于一球盘区间、且进球数双选锁定在 2球/3球 时，竞彩让球优先锚定【让平】，对冲 1-0、2-1 小胜高频赛果。",
+        "【受让低水防冷铁律】竞彩受让方（主+1）奖金持续低于 1.55 时，强队大概率无法净胜两球，一票否决让负，坚决单选【让胜】。",
+        "【三维联合自洽一致律】欧盘、竞彩让球与总进球数必须严格自洽（如推主胜+让负，进球数必须严禁选0球，比分锁定在2-1、3-2等净胜1球区间），彻底杜绝认知割裂失误。",
+        "【全场最高把握锁定律】报告第四节必须在欧盘、竞彩让球、进球数中锁定单项最具把握的【全场第一主推】，标定顶格置信度，不留任何模糊空间。"
     ]
 
     report = f"""
-### 📊 【全维度高胜率复盘中枢】做市商博弈与命中率穿透总报告
+### 📊 【竞彩全维度高胜率复盘中枢】做市商博弈与命中率穿透报告
 
 **本次综合检阅样本（共审验 {len(records)} 场含失误比赛）**：
 {cases_str}
 
 ---
 
-#### 一、三大玩法赛果偏差根因穿透（命中率导向诊断）
-1. **欧盘与让球盘的【假退盘/借题材阻上】认知盲区**：在失误样本中，做市商临场出现强队维持超低赔但亚盘退盘，模型机械化倒向下盘导致双黑。
-2. **进球数与比分突变的【破局连锁反应】**：弱队先进球导致强队全员压上搏杀，打穿小球防线。
-3. **三维预测之间的【联合自洽性割裂】**：必须强制三项结论在泊松联合空间内完全自洽。
+#### 一、竞彩核心玩法赛果偏差根因穿透
+1. **竞彩让球盘口与欧赔差值的【诱上陷阱】**：强队赢球但不穿盘是竞彩让胜失误的核心根源，需强化对【让平】精准对冲的抓取。
+2. **总进球数离散度与比分联动**：双选进球数必须紧密贴合竞彩让球剧本。
 
 ---
 
@@ -409,22 +401,22 @@ tab1, tab2, tab3 = st.tabs(["🚀 实时双核量化推演", "📋 历史对账�
 
 # ----------------- Tab 1: 实时推演 -----------------
 with tab1:
-    st.subheader("⚽ 赛事微观结构与核心赛果量化决策引擎（高命中率强化版）")
+    st.subheader("⚽ 赛事微观结构与竞彩核心赛果决策引擎（竞彩专项强化版）")
     
     col_in1, col_in2 = st.columns([1, 1])
     with col_in1:
         match_input = st.text_input("🔍 目标对阵 / 联赛（例如：欧国联 哈萨克斯坦 vs 摩尔多瓦）", placeholder="输入对阵球队")
         
-        with st.expander("🛠️ 本地数学层盘口校准参数（可选微调）", expanded=False):
+        with st.expander("🛠️ 竞彩官方盘口参数校准（必选）", expanded=True):
             param_c1, param_c2 = st.columns(2)
             with param_c1:
-                spread_val = st.number_input("主流亚盘让球深度（主队）", value=-0.25, step=0.25, help="如主让半球填 -0.5，客让平半填 0.25")
+                jc_handicap_val = st.number_input("竞彩让球数（主队）", value=-1, step=1, help="主让1球填 -1；主受让1球(客让1球)填 +1；主让2球填 -2")
             with param_c2:
-                total_val = st.number_input("主流大小球盘口基准线", value=2.25, step=0.25, help="如 2.25 球或 2.5 球")
+                total_val = st.number_input("市场进球数基准线参考", value=2.5, step=0.25, help="如 2.25 球或 2.5 球")
                 
     with col_in2:
         uploaded_imgs = st.file_uploader(
-            "📸 批量上传做市商走势截图（多选相册：欧赔+亚盘+必发+首发）",
+            "📸 批量上传做市商走势截图（多选相册：竞彩奖金+亚洲指数+必发+首发）",
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True
         )
@@ -437,11 +429,11 @@ with tab1:
 
     rules_context = ""
     if st.session_state.rules:
-        rules_context = f"【系统已自动进化生效的 {len(st.session_state.rules)} 条黄金避坑军规库（最高优先级，必须强制遵守）】：\n"
+        rules_context = f"【系统已自动进化生效的 {len(st.session_state.rules)} 条竞彩避坑军规库（最高优先级，必须强制遵守）】：\n"
         for idx, r in enumerate(st.session_state.rules):
             rules_context += f"{idx+1}. {r}\n"
 
-    btn_predict = st.button("🚀 启动工业级双核量化推演并持久化存盘")
+    btn_predict = st.button("🚀 启动竞彩双核量化推演并持久化存盘")
 
     if btn_predict:
         if not gemini_api_key:
@@ -449,8 +441,8 @@ with tab1:
         elif not match_input.strip() and not uploaded_imgs:
             st.warning("请至少输入对阵球队或上传盘口走势截图！")
         else:
-            with st.spinner("双核引擎运作中：[动态泊松求解] + [黄金军规库过滤] + [全场最高把握锁定]..."):
-                math_baseline = compute_dynamic_match_matrix(total_line=total_val, spread=spread_val)
+            with st.spinner("双核引擎运作中：[动态泊松求解] + [竞彩避坑军规过滤] + [全场最高把握锁定]..."):
+                math_baseline = compute_dynamic_match_matrix(total_line=total_val, spread=(jc_handicap_val * 0.5))
                 
                 live_odds_info = "未配置 Odds API，以截图和输入盘口为准"
                 if odds_api_key:
@@ -458,10 +450,13 @@ with tab1:
                     if odds_data:
                         live_odds_info = f"已成功调取 The Odds API 实时市场样本，覆盖 {len(odds_data)} 场正在监控的比赛盘口。"
 
+                h_disp = f"主{'+' if jc_handicap_val > 0 else ''}{jc_handicap_val}"
+
                 prompt = f"""
 你是专业足球赛事分析师兼资深量化研究员。现对以下赛事启动深度交易研判：
 
 【赛事信息】：{match_input if match_input else '详见上传截图中的赛事对阵'}
+【竞彩让球设定】：{h_disp}（竞彩让球数：{jc_handicap_val}）
 【外部实时做市商接口状态】：{live_odds_info}
 
 {rules_context}
@@ -473,16 +468,19 @@ with tab1:
 - 数理最高概率比分 Top 3：1) {math_baseline['top_scores'][0][0]} ({math_baseline['top_scores'][0][1]}%) | 2) {math_baseline['top_scores'][1][0]} ({math_baseline['top_scores'][1][1]}%) | 3) {math_baseline['top_scores'][2][0]} ({math_baseline['top_scores'][2][1]}%)
 
 【最高输出铁律（绝对保证精准度与命中率）】：
-1. **核心结论必须明确，绝不模棱两可**：严禁给出“建议观望”、“放弃开仓”、“双选走两头”等模糊表述，每一项必须给出唯一确定的赛果判定。
-2. **三项核心预测必须全部附带置信度（Confidence %）**：欧盘胜平负、亚盘让球盘、多选总进球数两选，每一项必须明确标出置信度百分比。
-3. **严格保证多维度自洽性（Joint Consistency）**：胜平负、让球盘与进球数必须逻辑自洽，严禁出现互斥或概率相悖的荒谬组合。
+1. **核心结论必须明确，绝不模棱两可**：严禁给出“建议观望”、“双选走两头”等模糊表述，每一项必须给出唯一确定的赛果判定。
+2. **三项核心预测必须全部附带置信度（Confidence %）**：
+   - 欧盘胜平负（单一确定项 + 置信度）
+   - 竞彩让球胜平负（单一确定项 + 置信度）
+   - 双选总进球数（两个具体进球数 + 独立置信度）
+3. **严格保证多维度自洽性（Joint Consistency）**：胜平负、竞彩让球与总进球数必须逻辑自洽，严禁出现互斥选项。
 4. **确立全场最高把握核心主推（Top Confidence Pick）**：必须从三项中甄选出把握最大、逻辑最确定的一项进行重点锁定。
 
 请严格按照以下工业化格式输出报告：
 
 ### 一、做市商微观操盘定性
 - **做市商模式归类**：明确标出【模式A：浅盘诱热 / 模式B：借题材阻盘 / 模式C：大单扫盘 Steam / 模式D：中立水钱对冲】，并说明主力资金真实意图。
-- **平博/皇冠/利记异动解析**：初终盘变轨、升降水幅度与真实去抽水公允概率。
+- **平博/皇冠/竞彩奖金异动解析**：初终盘变轨、升降水幅度与真实去抽水公允概率。
 - **必发成交冷热**：成交量分布是否存在散户扎堆或主力暗盘扫盘。
 
 ### 二、比赛剧本演进与 Game-State 突变防范
@@ -494,20 +492,20 @@ with tab1:
 1. **欧盘胜平负**：
    - 核心结论：明确给出【主胜】、【平局】或【客胜】（单一确定选项）
    - 预测置信度：XX%
-   - 价格参考：当前参考赔率 X.XX | 最低可接受赔率（Cut-off Odds）：X.XX
-2. **亚盘让球盘**：
-   - 明确盘口：标明让球方及让球幅度（如：客队受让半球）
+   - 价格参考：当前参考赔率 X.XX | 最低可接受赔率：X.XX
+2. **竞彩让球胜平负**：
+   - 明确盘口：【{h_disp}】（竞彩让球数：{jc_handicap_val}）
    - 核心结论：明确给出【让胜】、【让平】或【让负】（单一确定选项）
    - 预测置信度：XX%
-   - 水位参考：当前参考水位 X.XX | 最低可接受水位：X.XX
-3. **大小球与总进球数**：
-   - 主流亚盘大小球：【Over / Under X.X 球】（置信度：XX%）
+   - 竞彩奖金参考：当前参考奖金 X.XX
+3. **双选总进球数**：
    - 精确进球数两选：推荐一 X 球（XX%） | 推荐二 X 球（XX%）
+   - 主流大小球参考：【Over / Under X.X 球】
 4. **数理联合自洽 Top 3 终场比分**：
    - ① X-X（XX.X%）  ② X-X（XX.X%）  ③ X-X（XX.X%）
 
 ### 四、全场最高置信核心主推（Top Confidence Pick）
-- **全场第一主推项**：在上述欧盘、让球、进球数中，明确选出单场把握最高、确定性最强的一项（例如：【全场主推：进球数两选 1球/2球】或【全场主推：亚盘让负】）。
+- **全场第一主推项**：在上述欧盘、竞彩让球、进球数中，明确选出单场把握最高、确定性最强的一项（例如：【全场主推：竞彩让平】或【全场主推：双选总进球 2球/3球】）。
 - **最高置信度标定**：XX%（全场顶格置信度）
 - **核心逻辑背书**：用 2 句话讲透为什么这项最具确定性、最难被爆冷。
 - **推演时效状态**：【临场决战态（已定首发）】或【早盘战略态（未定首发）】。
@@ -523,7 +521,7 @@ with tab1:
                 )
 
                 if result_text:
-                    st.success(f"✅ 高命中率量化推演完成！（计算节点：{used_model}）")
+                    st.success(f"✅ 竞彩量化推演完成！（计算节点：{used_model}）")
                     st.markdown(result_text)
 
                     display_name = match_input.strip() if match_input.strip() else "核心焦点赛事（多图交叉解析）"
@@ -533,8 +531,7 @@ with tab1:
                         "match": display_name,
                         "model": used_model,
                         "report": result_text,
-                        "spread": spread_val,      # 永久持久化让球深度，对账零误差
-                        "total_line": total_val,  # 永久持久化大小球深度
+                        "jc_handicap": jc_handicap_val,  # 永久持久化竞彩让球数
                         "status": "待结算",
                         "final_score": "",
                         "audit_1x2": "待结算",
@@ -546,13 +543,13 @@ with tab1:
                     }
                     st.session_state.records.insert(0, new_record)
                     save_history(st.session_state.records)
-                    st.toast("🎉 本次高命中率报告已自动存入持久化账本！", icon="💾")
+                    st.toast("🎉 本次竞彩报告已自动存入持久化账本！", icon="💾")
                 else:
                     st.error(f"接口响应异常：{err}")
 
 # ----------------- Tab 2: 历史对账与三维结算 -----------------
 with tab2:
-    st.subheader("📋 推演历史对账与三维独立核销")
+    st.subheader("📋 竞彩推演历史对账与三维独立核销")
     if not st.session_state.records:
         st.info("暂无历史推演存档。请在【实时双核量化推演】中生成首次分析。")
     else:
@@ -571,8 +568,8 @@ with tab2:
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("欧盘独立胜率", f"{rate_1x2:.1f}%", f"{hit_1x2}/{settled_count} 场")
-        m2.metric("让球独立胜率", f"{rate_handicap:.1f}%", f"{hit_handicap}/{settled_count} 场")
-        m3.metric("进球数双选胜率", f"{rate_goals:.1f}%", f"{hit_goals}/{settled_count} 场")
+        m2.metric("竞彩让球独立胜率", f"{rate_handicap:.1f}%", f"{hit_handicap}/{settled_count} 场")
+        m3.metric("双选进球数胜率", f"{rate_goals:.1f}%", f"{hit_goals}/{settled_count} 场")
         m4.metric("3/3 全红率", f"{rate_all:.1f}%", f"{all_hit}/{settled_count} 场")
 
         st.markdown("---")
@@ -582,7 +579,7 @@ with tab2:
             with st.expander(f"【{current_status}】 {rec.get('date', '')} | {rec.get('match', '')}", expanded=(idx == 0)):
                 st.markdown(rec.get("report", ""))
                 
-                st.markdown("##### 🔍 三维独立核验状态")
+                st.markdown("##### 🔍 竞彩三维独立核验状态")
                 tag_c1, tag_c2, tag_c3 = st.columns(3)
                 
                 st_1x2 = rec.get('audit_1x2', '待结算')
@@ -593,14 +590,13 @@ with tab2:
                 elif st_1x2 == "未命中": tag_c1.error("欧盘胜平负：**未命中** ❌")
                 else: tag_c1.info("欧盘胜平负：**待结算**")
 
-                if st_hand == "已命中": tag_c2.success("让球胜平负：**已命中** ✅")
-                elif st_hand == "未命中": tag_c2.error("让球胜平负：**未命中** ❌")
-                elif st_hand == "走盘": tag_c2.warning("让球胜平负：**走盘** ⚖️")
-                else: tag_c2.info("让球胜平负：**待结算**")
+                if st_hand == "已命中": tag_c2.success("竞彩让球：**已命中** ✅")
+                elif st_hand == "未命中": tag_c2.error("竞彩让球：**未命中** ❌")
+                else: tag_c2.info("竞彩让球：**待结算**")
 
-                if st_g == "已命中": tag_c3.success("进球数双选：**已命中** ✅")
-                elif st_g == "未命中": tag_c3.error("进球数双选：**未命中** ❌")
-                else: tag_c3.info("进球数双选：**待结算**")
+                if st_g == "已命中": tag_c3.success("双选进球数：**已命中** ✅")
+                elif st_g == "未命中": tag_c3.error("双选进球数：**未命中** ❌")
+                else: tag_c3.info("双选进球数：**待结算**")
 
                 if rec.get("audit_note"):
                     st.caption(f"💡 审计明细摘要：{rec.get('audit_note')}")
@@ -617,8 +613,8 @@ with tab2:
                         if not target_s:
                             st.warning("⚠️ 请先在左侧输入终场比分（如 1-1）！")
                         else:
-                            rec_spread = rec.get("spread", -0.25)
-                            res, err_msg = evaluate_score_locally(rec.get("report", ""), target_s, record_spread=rec_spread)
+                            rec_jc_h = rec.get("jc_handicap", -1)
+                            res, err_msg = evaluate_score_locally(rec.get("report", ""), target_s, record_jc_handicap=rec_jc_h)
                             if err_msg:
                                 st.error(err_msg)
                             else:
@@ -627,7 +623,7 @@ with tab2:
                                 rec["audit_handicap"] = res["audit_handicap"]
                                 rec["audit_goals"] = res["audit_goals"]
                                 rec["status"] = res["status"]
-                                rec["audit_note"] = f"【本地秒级核销】{res['summary']}"
+                                rec["audit_note"] = f"【竞彩本地核销】{res['summary']}"
                                 save_history(st.session_state.records)
                                 
                                 evolved, failed_cnt = trigger_silent_auto_evolution(st.session_state.records)
@@ -638,18 +634,18 @@ with tab2:
                                 time.sleep(0.3)
                                 st.rerun()
 
-                with st.expander("🛠️ 手动覆写判定", expanded=False):
+                with st.expander("🛠️️ 手动覆写判定", expanded=False):
                     adv_c1, adv_c2, adv_c3 = st.columns(3)
                     with adv_c1:
                         edit_1x2 = st.selectbox("欧盘判定", ["待结算", "已命中", "未命中"], 
                                                 index=["待结算", "已命中", "未命中"].index(rec.get("audit_1x2", "待结算")), 
                                                 key=f"ed_1x2_{rec['id']}")
                     with adv_c2:
-                        edit_hand = st.selectbox("让球判定", ["待结算", "已命中", "未命中", "走盘"], 
-                                                 index=["待结算", "已命中", "未命中", "走盘"].index(rec.get("audit_handicap", "待结算")), 
+                        edit_hand = st.selectbox("竞彩让球判定", ["待结算", "已命中", "未命中"], 
+                                                 index=["待结算", "已命中", "未命中"].index(rec.get("audit_handicap", "待结算")), 
                                                  key=f"ed_hand_{rec['id']}")
                     with adv_c3:
-                        edit_g = st.selectbox("进球数判定", ["待结算", "已命中", "未命中"], 
+                        edit_g = st.selectbox("双选进球数判定", ["待结算", "已命中", "未命中"], 
                                               index=["待结算", "已命中", "未命中"].index(rec.get("audit_goals", "待结算")), 
                                               key=f"ed_g_{rec['id']}")
                     
@@ -670,7 +666,7 @@ with tab2:
 
 # ----------------- Tab 3: 错题进化记忆库 -----------------
 with tab3:
-    st.subheader("🧠 错题进化记忆库与全自动监控看板")
+    st.subheader("🧠 竞彩错题进化记忆库与全自动监控看板")
     st.caption("系统每累计 5 场失误会自动完成升级！你也可以在此手动触发全量穿透。")
 
     all_failed_records = [
@@ -684,8 +680,8 @@ with tab3:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("累计失误总场次", f"{len(all_failed_records)} 场")
-    c2.warning(f"让球未命中：**{cnt_hand}** 场")
-    c3.warning(f"进球数未命中：**{cnt_goals}** 场")
+    c2.warning(f"竞彩让球未命中：**{cnt_hand}** 场")
+    c3.warning(f"双选进球数未命中：**{cnt_goals}** 场")
     c4.warning(f"欧盘未命中：**{cnt_ox}** 场")
 
     st.markdown("---")
@@ -712,12 +708,10 @@ with tab3:
                 st.session_state.last_evolved_count = len(all_failed_records)
                 save_rules(st.session_state.rules, st.session_state.last_evolved_count)
                 
-                # 存入 session_state，刷新后依然稳定展示不闪退
                 st.session_state["latest_attribution_view"] = report_text
                 st.success("✅ 穿透完成！黄金军规池已成功迭代！")
                 st.rerun()
 
-    # 持久化展示归因报告，彻底杜绝闪退漏洞
     if "latest_attribution_view" in st.session_state:
         st.markdown("---")
         st.markdown(st.session_state["latest_attribution_view"])
