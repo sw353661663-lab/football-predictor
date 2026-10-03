@@ -134,13 +134,13 @@ def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
         "top_scores": sorted_scores
     }
 
-# ================= 真实 The Odds API 机构数据与官方比分抓取 =================
+# ================= 真实 The Odds API 机构数据抓取 =================
 def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
     """拉取做市商实时赔率"""
     if not api_key:
         return None, "未配置 Odds API Key"
     
-    url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={api_key}&regions={region}&markets=h2h,spreads,totals&oddsFormat=decimal"
+    url = f"[https://api.the-odds-api.com/v4/sports/](https://api.the-odds-api.com/v4/sports/){sport}/odds/?apiKey={api_key}&regions={region}&markets=h2h,spreads,totals&oddsFormat=decimal"
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
@@ -150,10 +150,7 @@ def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
         return None, f"网络请求异常: {str(e)}"
 
 def fetch_score_from_odds_api(api_key, match_name):
-    """
-    通过 The Odds API 官方 Scores 接口直连获取完场比分
-    覆盖主流足球联赛，返回格式如 (1, 2)
-    """
+    """通过 The Odds API 尝试获取完场比分"""
     if not api_key:
         return None, "未配置 Odds API Key"
     
@@ -163,14 +160,13 @@ def fetch_score_from_odds_api(api_key, match_name):
         "soccer_italy_serie_a", "soccer_france_ligue_one", "soccer_fa_cup"
     ]
     
-    # 清洗对阵关键词
     clean_name = match_name.replace("vs", " ").replace("VS", " ").replace("-", " ")
     keywords = [w.strip().lower() for w in clean_name.split() if len(w.strip()) >= 2]
     
     for sport in soccer_sports:
-        url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores/?apiKey={api_key}&daysFrom=3"
+        url = f"[https://api.the-odds-api.com/v4/sports/](https://api.the-odds-api.com/v4/sports/){sport}/scores/?apiKey={api_key}&daysFrom=3"
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, timeout=8)
             if r.status_code != 200:
                 continue
             data = r.json()
@@ -180,7 +176,6 @@ def fetch_score_from_odds_api(api_key, match_name):
                 home_team = game.get("home_team", "").lower()
                 away_team = game.get("away_team", "").lower()
                 
-                # 模糊匹配对阵双方
                 match_count = sum(1 for kw in keywords if kw in home_team or kw in away_team)
                 if match_count >= 1 and game.get("scores"):
                     scores = game["scores"]
@@ -192,11 +187,49 @@ def fetch_score_from_odds_api(api_key, match_name):
                         else:
                             a_score = s["score"]
                     if h_score is not None and a_score is not None:
-                        return f"{h_score}-{a_score}", f"The Odds API 官方完场直连确认（{game['home_team']} {h_score}-{a_score} {game['away_team']}）"
+                        return f"{h_score}-{a_score}", f"The Odds API 直连确认（{game['home_team']} {h_score}-{a_score} {game['away_team']}）"
         except Exception:
             continue
             
-    return None, "未在 The Odds API 当前覆盖联赛中匹配到完场赛果"
+    return None, "Odds API 未匹配到该场记录"
+
+# ================= 强效文本比分提取器 =================
+def parse_score_from_search(text):
+    """从任意搜索结果中精准提取比分"""
+    if not text:
+        return None
+    patterns = [
+        r"(?:比分|终场|完场|全场|赛果)[^\d\n]*?(\d{1,2})\s*[-:：]\s*(\d{1,2})",
+        r"\b(\d{1,2})\s*[-:：]\s*(\d{1,2})\b"
+    ]
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}"
+    return None
+
+# ================= 健壮 JSON 提取器 =================
+def extract_json_from_text(text):
+    if not text:
+        return None
+    try:
+        return json.loads(text.strip())
+    except Exception:
+        pass
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start:end+1])
+        except Exception:
+            pass
+    return None
 
 # ================= 侧边栏：系统管理与军规记忆库 =================
 with st.sidebar:
@@ -244,33 +277,10 @@ with st.sidebar:
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", gemini_key_input).strip()
 odds_api_key = st.secrets.get("ODDS_API_KEY", odds_key_input).strip()
 
-# ================= 健壮 JSON 提取器 =================
-def extract_json_from_text(text):
-    if not text:
-        return None
-    try:
-        return json.loads(text.strip())
-    except Exception:
-        pass
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(text[start:end+1])
-        except Exception:
-            pass
-    return None
-
-# ================= 多模态与多模型容灾调度 =================
-def call_gemini_engine(api_key, prompt, images_payload=None):
-    """多模型容灾池，彻底避免单模型弃用异常"""
-    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+# ================= 多模态与联网搜索多通道调度 =================
+def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False):
+    """自适应容灾调度：支持多模型与多搜索工具自动降级"""
+    models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
     headers = {"Content-Type": "application/json"}
     
     parts = [{"text": prompt}]
@@ -285,28 +295,32 @@ def call_gemini_engine(api_key, prompt, images_payload=None):
             })
         
     payload = {"contents": [{"parts": parts}]}
-    last_err = ""
+    tools_variants = [[{"google_search": {}}], [{"googleSearch": {}}]] if enable_search else [None]
 
+    last_err = ""
     for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        try:
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            if r.status_code != 200:
-                last_err = f"模型 {model} 返回 HTTP {r.status_code}: {r.text[:200]}"
+        for tools_item in tools_variants:
+            if tools_item:
+                payload["tools"] = tools_item
+            elif "tools" in payload:
+                del payload["tools"]
+
+            url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={api_key}"
+            try:
+                r = requests.post(url, headers=headers, json=payload, timeout=60)
+                if r.status_code == 200:
+                    data = r.json()
+                    if "candidates" in data and data["candidates"]:
+                        content = data["candidates"][0].get("content", {})
+                        ret_parts = content.get("parts", [])
+                        text_list = [p.get("text", "") for p in ret_parts if "text" in p]
+                        if text_list:
+                            return "".join(text_list), model, None
+                else:
+                    last_err = f"模型 {model} 返回 HTTP {r.status_code}"
+            except Exception as e:
+                last_err = str(e)
                 continue
-            data = r.json()
-            if "candidates" in data and data["candidates"]:
-                content = data["candidates"][0].get("content", {})
-                ret_parts = content.get("parts", [])
-                text_list = [p.get("text", "") for p in ret_parts if "text" in p]
-                if text_list:
-                    return "".join(text_list), model, None
-            if "error" in data:
-                last_err = f"模型 {model} 错误: {data['error'].get('message', str(data))}"
-                continue
-        except Exception as e:
-            last_err = f"请求异常: {str(e)}"
-            continue
     return None, None, last_err
 
 def calculate_composite_status(r_1x2, r_handicap, r_goals):
@@ -329,7 +343,7 @@ def calculate_composite_status(r_1x2, r_handicap, r_goals):
         return "全黑盲区 (0/3)"
 
 def auto_evaluate_with_given_score(api_key, report_text, final_score):
-    """根据确定性比分，对【欧盘、让球、进球数】三项秒级独立核销"""
+    """根据确定性比分，对【欧盘、让球、进球数】三项独立核销"""
     prompt = (
         "你是一名客观严谨的体育量化复盘审计员。请根据【终场比分】和【推演报告摘要】，对三项预测独立逐笔核销。\n\n"
         f"【终场比分】：{final_score}\n"
@@ -345,7 +359,7 @@ def auto_evaluate_with_given_score(api_key, report_text, final_score):
         "audit_goals: 已命中 / 未命中\n"
         "summary: 一句话明细（例如：比分1-2，欧盘客胜(红)，让负(红)，进球数(黑)）\n"
     )
-    result_text, _, err = call_gemini_engine(api_key, prompt)
+    result_text, _, err = call_gemini_engine(api_key, prompt, enable_search=False)
     parsed = extract_json_from_text(result_text)
     if parsed:
         r_1x2 = parsed.get("audit_1x2", "待结算")
@@ -355,27 +369,47 @@ def auto_evaluate_with_given_score(api_key, report_text, final_score):
         return r_1x2, r_handicap, r_goals, status, parsed.get("summary", "")
     return "待结算", "待结算", "待结算", "待结算", f"核销计算异常: {err}"
 
-def master_settle_pipeline(gemini_key, odds_key, match_name, report_text, manual_score=""):
+def master_settle_pipeline(gemini_key, odds_key, match_name, match_date, report_text, manual_score=""):
     """
-    全自动主审计管线：
-    1. 优先使用手动比分；
-    2. 无手动比分时，调用 The Odds API 官方直连获取比分；
-    3. 获取比分后，立即执行三维独立判定。
+    全自动双通道核心对账管道（彻底告别手动输入）：
+    1. 优先使用手动比分（若有）；
+    2. 无手动比分时，尝试 The Odds API 官方接口；
+    3. 若 API 未匹配（或中文队名），自动无缝切入 Google 智能搜索提取比分；
+    4. 提取比分后，立即执行三维独立判定。
     """
     target_score = manual_score.strip()
-    score_source = "手动输入比分"
+    score_source = "手动输入"
+
+    # 通道 1：The Odds API
+    if not target_score and odds_key:
+        api_score, api_note = fetch_score_from_odds_api(odds_key, match_name)
+        if api_score:
+            target_score = api_score
+            score_source = api_note
+
+    # 通道 2：全网智能检索自动兜底
+    if not target_score:
+        search_prompt = (
+            f"请联网搜索并查询以下足球赛事的官方最终完赛比分（终场全场比分）：\n"
+            f"【对阵双方】：{match_name}\n"
+            f"【比赛记录时间】：{match_date}\n\n"
+            f"【要求】：\n"
+            f"1. 如果比赛尚未完赛或未开打，请直接回复：比赛尚未完赛。\n"
+            f"2. 如果比赛已完赛，请明确给出终场比分，必须包含标准比分格式，如：比分 1-2。"
+        )
+        res_text, used_model, err = call_gemini_engine(gemini_key, search_prompt, enable_search=True)
+        if res_text:
+            if "尚未完赛" in res_text or "未开赛" in res_text:
+                return "", "待结算", "待结算", "待结算", "待结算", "全网检索提示：该比赛尚未完赛或正在进行中，暂不结算。"
+            extracted_score = parse_score_from_search(res_text)
+            if extracted_score:
+                target_score = extracted_score
+                score_source = f"全网智能检索核实（完场 {extracted_score}）"
 
     if not target_score:
-        if odds_key:
-            api_score, api_note = fetch_score_from_odds_api(odds_key, match_name)
-            if api_score:
-                target_score = api_score
-                score_source = api_note
-        
-    if not target_score:
-        return "", "待结算", "待结算", "待结算", "待结算", "未能通过 API 匹配到完场比分，请在比分框手动填入比分后点击核销。"
+        return "", "待结算", "待结算", "待结算", "待结算", "全网未检索到该场完赛比分，可能因比赛延期或球队名称有误。"
 
-    # 执行三维独立精准核销
+    # 执行三维独立核销
     r_1x2, r_hand, r_g, st_comp, summary_note = auto_evaluate_with_given_score(
         gemini_key, report_text, target_score
     )
@@ -556,14 +590,14 @@ with tab2:
 
         if pending_list:
             st.markdown("---")
-            if st.button(f"⚡ 一键 API 检索核销所有待结算（共 {len(pending_list)} 场）"):
+            if st.button(f"⚡ 一键全自动检索核销所有待结算（共 {len(pending_list)} 场）"):
                 if not gemini_api_key:
                     st.error("请先配置 Gemini API Key！")
                 else:
-                    with st.spinner("正在通过 The Odds API 官方接口检索完场比分并独立核销..."):
+                    with st.spinner("正在双通道自动检索完场比分并独立核销..."):
                         for r in pending_list:
                             score, a_1x2, a_hand, a_g, st_comp, note = master_settle_pipeline(
-                                gemini_api_key, odds_api_key, r.get("match", ""), r.get("report", ""), r.get("final_score", "")
+                                gemini_api_key, odds_api_key, r.get("match", ""), r.get("date", ""), r.get("report", ""), r.get("final_score", "")
                             )
                             if st_comp != "待结算":
                                 r["final_score"] = score
@@ -594,7 +628,7 @@ with tab2:
                 
                 c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5])
                 with c1:
-                    score = st.text_input("终场比分（留空自动调 API 查）", value=rec.get("final_score", ""), key=f"score_{rec['id']}")
+                    score = st.text_input("终场比分（留空完全自动查）", value=rec.get("final_score", ""), key=f"score_{rec['id']}")
                 with c2:
                     edit_1x2 = st.selectbox("欧盘判定", ["待结算", "已命中", "未命中"], 
                                             index=["待结算", "已命中", "未命中"].index(rec.get("audit_1x2", "待结算")), 
@@ -610,13 +644,13 @@ with tab2:
                 
                 b_col1, b_col2, b_col3 = st.columns([3, 3, 2])
                 with b_col1:
-                    if st.button("🌐 API 查比分并三维核销", key=f"btn_search_{rec['id']}"):
+                    if st.button("🌐 全自动查比分并三维核销", key=f"btn_search_{rec['id']}"):
                         if not gemini_api_key:
                             st.error("请先配置 Gemini API Key！")
                         else:
-                            with st.spinner(f"正在调取 API 核查【{rec.get('match')}】完场比分..."):
+                            with st.spinner(f"正在全自动核查【{rec.get('match')}】完场比分..."):
                                 s, a_1x2, a_hand, a_g, st_comp, note = master_settle_pipeline(
-                                    gemini_api_key, odds_api_key, rec.get("match", ""), rec.get("report", ""), score
+                                    gemini_api_key, odds_api_key, rec.get("match", ""), rec.get("date", ""), rec.get("report", ""), score
                                 )
                                 rec["final_score"] = s
                                 rec["audit_1x2"] = a_1x2
@@ -631,9 +665,9 @@ with tab2:
                                     st.warning(note)
                                 st.rerun()
                 with b_col2:
-                    if st.button("⚡ 依据输入比分三维核销", key=f"btn_calc_{rec['id']}"):
+                    if st.button("⚡ 依据此比分直接核销", key=f"btn_calc_{rec['id']}"):
                         if not score.strip():
-                            st.warning("比分框为空，请先填写比分！")
+                            st.warning("比分框为空，请先填写比分或点击左侧自动查比分！")
                         elif not gemini_api_key:
                             st.error("请先配置 Gemini API Key！")
                         else:
