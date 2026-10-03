@@ -169,7 +169,6 @@ def evaluate_score_locally(report_text, score_str):
     # 1. 判定欧盘胜平负
     actual_1x2 = "主胜" if h_goals > a_goals else ("平局" if h_goals == a_goals else "客胜")
     
-    # 全兼容正则提取预测：优先检索欧盘段落
     m_ox_sec = re.search(r'(?:欧盘|胜平负).*?(?=(?:让球|亚盘|大小球|总进球|###|\Z))', report_text, re.DOTALL)
     ox_text = m_ox_sec.group(0) if m_ox_sec else report_text
     
@@ -181,8 +180,6 @@ def evaluate_score_locally(report_text, score_str):
     audit_1x2 = "未命中"
     if pred_1x2:
         audit_1x2 = "已命中" if pred_1x2 == actual_1x2 else "未命中"
-    else:
-        audit_1x2 = "未命中"
         
     # 2. 判定精确进球数双选
     m_goals_sec = re.search(r'(?:大小球|总进球数|进球数).*?(?=(?:###|0\.25x|\Z))', report_text, re.DOTALL)
@@ -209,7 +206,6 @@ def evaluate_score_locally(report_text, score_str):
     elif "让胜" in hand_text: pred_handicap = "让胜"
     elif "让平" in hand_text: pred_handicap = "让平"
     
-    # 计算主队让球调整值 (h_adj)
     h_adj = -0.5
     if "受让半球" in hand_text or "+0.5" in hand_text:
         h_adj = 0.5 if ("主" in hand_text and "受让" in hand_text) else -0.5
@@ -307,9 +303,10 @@ with st.sidebar:
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", gemini_key_input).strip()
 odds_api_key = st.secrets.get("ODDS_API_KEY", odds_key_input).strip()
 
-# ================= 多模态与联网搜索多通道调度 =================
+# ================= 多模态与官方 Gemini 3.8 核心调度 =================
 def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False):
-    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    """采用官方最新推荐的 gemini-3.8-flash 活跃端点池"""
+    models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
     headers = {"Content-Type": "application/json"}
     
     parts = [{"text": prompt}]
@@ -348,7 +345,7 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
     return None, None, last_err
 
 def auto_search_score(gemini_key, match_name, match_date):
-    """仅通过联网搜索抓取比分数字"""
+    """联网搜索抓取比分"""
     prompt = f"请联网查询足球比赛【{match_name}】（记录日期：{match_date}）的官方最终完场比分。请仅回复纯文本比分，例如：1-1 或 1-2。若比赛尚未完赛请回复：尚未完赛。"
     res_text, _, err = call_gemini_engine(gemini_key, prompt, enable_search=True)
     if res_text:
@@ -537,7 +534,6 @@ with tab2:
             with st.expander(f"【{current_status}】 {rec.get('date', '')} | {rec.get('match', '')}", expanded=(idx == 0)):
                 st.markdown(rec.get("report", ""))
                 
-                # 状态标签展示
                 st.markdown("##### 🔍 三维独立核验状态")
                 tag_c1, tag_c2, tag_c3 = st.columns(3)
                 
@@ -568,7 +564,6 @@ with tab2:
                 with c_in2:
                     st.write("")
                     st.write("")
-                    # 主核销按钮：点击后直接计算、存盘、刷新
                     if st.button("⚡ 依据此比分一键直接核销（推荐）", key=f"btn_local_{rec['id']}"):
                         target_s = score_input_val.strip()
                         if not target_s:
@@ -589,7 +584,6 @@ with tab2:
                                 time.sleep(0.3)
                                 st.rerun()
 
-                # 展开高级修改抽屉（仅在需要手动覆写时使用）
                 with st.expander("🛠️ 手动覆写判定与联网查询", expanded=False):
                     adv_c1, adv_c2, adv_c3 = st.columns(3)
                     with adv_c1:
