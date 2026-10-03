@@ -51,7 +51,6 @@ def load_rules():
 
 def save_rules(rules, last_evolved_count=0):
     try:
-        # 严格保持在最精炼的 8 条黄金军规之内
         trimmed_rules = rules[-MAX_RULES_CAPACITY:]
         with open(RULES_FILE, "w", encoding="utf-8") as f:
             json.dump({
@@ -61,49 +60,17 @@ def save_rules(rules, last_evolved_count=0):
     except Exception as e:
         st.error(f"军规存档异常: {str(e)}")
 
+# 状态安全独立初始化
 if "records" not in st.session_state:
     st.session_state.records = load_history()
 
+r_list, r_cnt = load_rules()
 if "rules" not in st.session_state:
-    r_list, r_cnt = load_rules()
     st.session_state.rules = r_list
+if "last_evolved_count" not in st.session_state:
     st.session_state.last_evolved_count = r_cnt
 
-# ================= 确定性数学层：Shin 去抽水与动态泊松 =================
-def shin_devigging(odds):
-    """Shin (1993) 严格无偏去抽水算法"""
-    try:
-        valid_odds = [float(o) for o in odds if float(o) > 1.0]
-        if len(valid_odds) != 3:
-            return None
-        
-        inv_sum = sum(1.0 / o for o in valid_odds)
-        if inv_sum <= 1.0:
-            return [round((1.0 / o) / inv_sum, 4) for o in valid_odds]
-        
-        low, high = 0.0, 0.40
-        z = 0.0
-        for _ in range(35):
-            mid = (low + high) / 2.0
-            p_sum = sum(
-                (math.sqrt(mid**2 + 4 * (1 - mid) * ((1.0 / o) / inv_sum)) - mid) / (2 * (1 - mid))
-                for o in valid_odds
-            )
-            if p_sum > 1.0:
-                low = mid
-            else:
-                high = mid
-            z = mid
-            
-        true_probs = [
-            (math.sqrt(z**2 + 4 * (1 - z) * ((1.0 / o) / inv_sum)) - z) / (2 * (1 - z))
-            for o in valid_odds
-        ]
-        norm = sum(true_probs)
-        return [round(p / norm, 4) for p in true_probs]
-    except Exception:
-        return None
-
+# ================= 确定性数学层：动态泊松与战力求解器 =================
 def poisson_pmf(k, lmbda):
     """泊松分布单点概率"""
     if lmbda <= 0:
@@ -111,7 +78,7 @@ def poisson_pmf(k, lmbda):
     return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
 def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
-    """根据盘口大小球基准线与让球深度，数值反解两队预期进球"""
+    """根据盘口基准线与让球深度，数值反解两队预期进球 xG"""
     home_xg = max(0.2, (total_line - spread) / 2.0)
     away_xg = max(0.2, (total_line + spread) / 2.0)
 
@@ -146,24 +113,24 @@ def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
         "top_scores": sorted_scores
     }
 
-# ================= 真实 The Odds API 机构数据抓取 =================
+# ================= The Odds API 机构数据抓取 =================
 def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
-    """拉取做市商实时赔率"""
     if not api_key:
         return None, "未配置 Odds API Key"
-    
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={api_key}&regions={region}&markets=h2h,spreads,totals&oddsFormat=decimal"
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=12)
         if r.status_code == 200:
             return r.json(), None
-        return None, f"API 状态码: {r.status_code} - {r.text[:150]}"
+        return None, f"API 状态码: {r.status_code}"
     except Exception as e:
-        return None, f"网络请求异常: {str(e)}"
+        return None, f"网络异常: {str(e)}"
 
-# ================= 纯 Python 本地全兼容确定性核销引擎 =================
-def evaluate_score_locally(report_text, score_str):
-    """100% 本地确定性运算：完全兼容新老报告各种排版与输入法全角符号"""
+# ================= 纯 Python 本地精准核销引擎（防倒挂加固版） =================
+def evaluate_score_locally(report_text, score_str, record_spread=-0.25):
+    """
+    100% 本地运算：定点锚定匹配，彻底修复倒挂误判漏洞
+    """
     if not score_str:
         return None, "比分未输入"
     
@@ -176,87 +143,92 @@ def evaluate_score_locally(report_text, score_str):
     a_goals = int(m_score.group(2))
     total_goals = h_goals + a_goals
     
-    # 1. 判定欧盘胜平负
+    # 1. 真实赛果换算
     actual_1x2 = "主胜" if h_goals > a_goals else ("平局" if h_goals == a_goals else "客胜")
-    m_ox_sec = re.search(r'(?:欧盘|胜平负).*?(?=(?:让球|亚盘|大小球|总进球|###|\Z))', report_text, re.DOTALL)
-    ox_text = m_ox_sec.group(0) if m_ox_sec else report_text
     
+    # 2. 定点精准提取欧盘预测（优先抓取带有明确标记的结论）
     pred_1x2 = None
-    if "客胜" in ox_text: pred_1x2 = "客胜"
-    elif "主胜" in ox_text: pred_1x2 = "主胜"
-    elif "平局" in ox_text: pred_1x2 = "平局"
-    
+    m_ox_target = re.search(r'欧盘(?:胜平负)?.*?核心结论[：:\s]*[【\[(]?([主客]胜|平局)[】\])]?', report_text)
+    if m_ox_target:
+        pred_1x2 = m_ox_target.group(1)
+    else:
+        m_ox_sec = re.search(r'(?:欧盘|胜平负).*?(?=(?:让球|亚盘|大小球|总进球|###|\Z))', report_text, re.DOTALL)
+        sec_text = m_ox_sec.group(0) if m_ox_sec else report_text
+        m_b = re.search(r'[【\[]([主客]胜|平局)[】\]]', sec_text)
+        if m_b:
+            pred_1x2 = m_b.group(1)
+        else:
+            if "核心结论" in sec_text:
+                after_core = sec_text.split("核心结论")[-1][:50]
+                for opt in ["主胜", "客胜", "平局"]:
+                    if opt in after_core:
+                        pred_1x2 = opt
+                        break
+
     audit_1x2 = "未命中"
     if pred_1x2 and pred_1x2 == actual_1x2:
         audit_1x2 = "已命中"
-        
-    # 2. 精确进球数双选
-    m_goals_sec = re.search(r'(?:大小球|总进球数|进球数).*?(?=(?:###|四、|0\.25x|\Z))', report_text, re.DOTALL)
-    g_text = m_goals_sec.group(0) if m_goals_sec else report_text
-    
-    found_matches = re.findall(r'(?<![\.\d])(\d)\s*球', g_text)
+
+    # 3. 定点精准提取进球数两选（杜绝前瞻战绩数字干扰）
     goals_nums = []
-    for g in found_matches:
-        gi = int(g)
-        if gi not in goals_nums and gi <= 8:
-            goals_nums.append(gi)
-    goals_nums = goals_nums[:2]
+    m_g1 = re.search(r'推荐[一1][：:\s]*(\d)\s*球', report_text)
+    m_g2 = re.search(r'推荐[二2][：:\s]*(\d)\s*球', report_text)
+    if m_g1: goals_nums.append(int(m_g1.group(1)))
+    if m_g2: goals_nums.append(int(m_g2.group(1)))
     
+    if not goals_nums:
+        m_goals_sec = re.search(r'(?:大小球|总进球数|进球数).*?(?=(?:###|四、|0\.25x|\Z))', report_text, re.DOTALL)
+        g_text = m_goals_sec.group(0) if m_goals_sec else report_text
+        bracket_goals = re.findall(r'[【\[](\d)\s*球[】\]]', g_text)
+        if bracket_goals:
+            goals_nums = [int(x) for x in bracket_goals[:2]]
+        else:
+            found = re.findall(r'(?<![\.\d])(\d)\s*球', g_text)
+            for f in found:
+                val = int(f)
+                if val not in goals_nums and val <= 7:
+                    goals_nums.append(val)
+            goals_nums = goals_nums[:2]
+
     audit_goals = "未命中"
     if goals_nums and total_goals in goals_nums:
         audit_goals = "已命中"
-        
-    # 3. 亚盘/竞彩让球
-    m_hand_sec = re.search(r'(?:让球|亚盘).*?(?=(?:大小球|总进球|欧盘|###|\Z))', report_text, re.DOTALL)
-    hand_text = m_hand_sec.group(0) if m_hand_sec else report_text
-    
+
+    # 4. 定点精准提取让球盘预测
     pred_handicap = None
-    if "让负" in hand_text: pred_handicap = "让负"
-    elif "让胜" in hand_text: pred_handicap = "让胜"
-    elif "让平" in hand_text: pred_handicap = "让平"
-    
-    h_adj = -0.5
-    if "受让半球" in hand_text or "+0.5" in hand_text:
-        h_adj = 0.5 if ("主" in hand_text and "受让" in hand_text) else -0.5
-    elif "让半球" in hand_text or "-0.5" in hand_text:
-        h_adj = -0.5
-    elif "平半" in hand_text or "0.25" in hand_text:
-        h_adj = 0.25 if "受让" in hand_text else -0.25
-    elif "半一" in hand_text or "0.75" in hand_text:
-        h_adj = 0.75 if "受让" in hand_text else -0.75
-    elif "一球" in hand_text or "1" in hand_text:
-        h_adj = 1.0 if "受让" in hand_text else -1.0
-    elif "平手" in hand_text:
-        h_adj = 0.0
-        
-    diff = (h_goals + h_adj) - a_goals
-    if diff > 0:
-        actual_handicap = "让胜"
-    elif diff == 0:
-        actual_handicap = "让平"
+    m_hd_target = re.search(r'(?:亚盘|让球).*?核心结论[：:\s]*[【\[(]?([让受]?[胜平负]|走盘)[】\])]?', report_text)
+    if m_hd_target:
+        pred_handicap = m_hd_target.group(1)
     else:
-        actual_handicap = "让负"
-        
+        m_hand_sec = re.search(r'(?:让球|亚盘).*?(?=(?:大小球|总进球|欧盘|###|\Z))', report_text, re.DOTALL)
+        hd_text = m_hand_sec.group(0) if m_hand_sec else report_text
+        m_hb = re.search(r'[【\[]([让受]?[胜平负]|走盘)[】\]]', hd_text)
+        if m_hb:
+            pred_handicap = m_hb.group(1)
+
+    # 结合记录中的实际盘口深度进行让球核销
+    h_adj = record_spread
+    diff = (h_goals + h_adj) - a_goals
+    if diff > 0: actual_handicap = "让胜"
+    elif diff == 0: actual_handicap = "让平"
+    else: actual_handicap = "让负"
+
     audit_handicap = "未命中"
     if pred_handicap:
         if pred_handicap == actual_handicap:
             audit_handicap = "已命中"
         elif diff == 0 and "走盘" in pred_handicap:
             audit_handicap = "走盘"
-            
-    # 4. 综合成色
-    hits = 0
-    if audit_1x2 == "已命中": hits += 1
-    if audit_handicap == "已命中": hits += 1
-    if audit_goals == "已命中": hits += 1
-    
+
+    # 5. 三维总体成色
+    hits = (1 if audit_1x2 == "已命中" else 0) + (1 if audit_handicap == "已命中" else 0) + (1 if audit_goals == "已命中" else 0)
     if hits == 3: comp_status = "全红极佳 (3/3)"
     elif hits == 2: comp_status = "双红达标 (2/3)"
     elif hits == 1: comp_status = "单红偏离 (1/3)"
     else: comp_status = "全黑盲区 (0/3)"
-    
-    summary = f"完场比分 {h_goals}-{a_goals} | 欧盘[{pred_1x2 or '已提取'}->{actual_1x2}:{audit_1x2}] | 让球[{pred_handicap or '已提取'}->{actual_handicap}:{audit_handicap}] | 进球[{goals_nums}->{total_goals}球:{audit_goals}]"
-    
+
+    summary = f"完场 {h_goals}-{a_goals} | 欧盘[{pred_1x2 or '已提取'}->{actual_1x2}:{audit_1x2}] | 让球[{pred_handicap or '已提取'}->{actual_handicap}:{audit_handicap}] | 进球[{goals_nums}->{total_goals}球:{audit_goals}]"
+
     return {
         "final_score": f"{h_goals}-{a_goals}",
         "audit_1x2": audit_1x2,
@@ -269,8 +241,8 @@ def evaluate_score_locally(report_text, score_str):
 # ================= 侧边栏：系统配置与军规记忆库 =================
 with st.sidebar:
     st.header("🎯 高胜率自进化中枢")
-    st.info(f"🛡️ 动态黄金军规池：**{len(st.session_state.rules)} / {MAX_RULES_CAPACITY} 条**")
-    st.caption("机制：每累计 5 场失误，系统后台静默归因并自动迭代更新，永久杜绝规则冗余与冲突。")
+    st.info(f"🛡️ 黄金军规池容量：**{len(st.session_state.rules)} / {MAX_RULES_CAPACITY} 条**")
+    st.caption("机制：每满 5 场失误，系统后台静默自动迭代更新。")
     st.markdown("---")
     
     gemini_key_input = st.text_input("Gemini API Key (可选)", type="password")
@@ -278,7 +250,7 @@ with st.sidebar:
     st.caption("提示：云端已配置 Secrets 时后台将自动静默调用")
     
     st.markdown("---")
-    st.subheader(f"📜 当前生效的顶级军规")
+    st.subheader("📜 当前生效的顶级军规")
     if st.session_state.rules:
         for idx, rule in enumerate(st.session_state.rules):
             st.caption(f"{idx+1}. {rule}")
@@ -289,7 +261,7 @@ with st.sidebar:
             st.success("军规库已重置！")
             st.rerun()
     else:
-        st.caption("暂无军规。核销比赛每满 5 场失误，系统将全自动提炼注入。")
+        st.caption("暂无军规。核销比赛每满 5 场失误，系统将全自动生成注入。")
 
     st.markdown("---")
     st.subheader("💾 数据库全量热备份")
@@ -310,21 +282,32 @@ with st.sidebar:
         except Exception as e:
             st.error(f"恢复异常: {str(e)}")
 
-gemini_api_key = st.secrets.get("GEMINI_API_KEY", gemini_key_input).strip()
-odds_api_key = st.secrets.get("ODDS_API_KEY", odds_key_input).strip()
+# 安全读取 Secrets（杜绝 FileNotFoundError 崩溃）
+def get_secret(key, default=""):
+    try:
+        if key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    return default
 
-# ================= 多模型自动故障转移 + 指数退避重试 =================
+gemini_api_key = get_secret("GEMINI_API_KEY", gemini_key_input)
+odds_api_key = get_secret("ODDS_API_KEY", odds_key_input)
+
+# ================= 多模型调度：锁定 gemini-3.8-flash (阶梯式重试 + 手机图片容错) =================
 def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False):
-    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash"]
     headers = {"Content-Type": "application/json"}
     
     parts = [{"text": prompt}]
     if images_payload:
         for img_bytes, mime_type in images_payload:
+            # 兼容手机相册上传的异常 MIME 类型
+            safe_mime = mime_type if mime_type and mime_type.startswith("image/") else "image/jpeg"
             img_b64 = base64.b64encode(img_bytes).decode("utf-8")
             parts.append({
                 "inline_data": {
-                    "mime_type": mime_type,
+                    "mime_type": safe_mime,
                     "data": img_b64
                 }
             })
@@ -336,7 +319,7 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
     last_err = ""
     for model in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 r = requests.post(url, headers=headers, json=payload, timeout=60)
                 if r.status_code == 200:
@@ -350,21 +333,20 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
                     if "error" in data:
                         last_err = f"[{model}] {data['error'].get('message', str(data))}"
                 elif r.status_code in [503, 429]:
-                    last_err = f"[{model}] HTTP {r.status_code} (服务器繁忙)"
-                    time.sleep(1.5 * (attempt + 1))
+                    last_err = f"[{model}] HTTP {r.status_code} (服务器繁忙排队)"
+                    time.sleep(2.0 * (attempt + 1))
                     continue
                 else:
                     last_err = f"[{model}] HTTP {r.status_code}"
                     break
             except Exception as e:
-                last_err = f"[{model}] 请求超时: {str(e)}"
-                time.sleep(1.0)
+                last_err = f"[{model}] 请求异常: {str(e)}"
+                time.sleep(1.5)
                 continue
     return None, None, last_err
 
-# ================= 本地纯 Python 全维度综合归因引擎（零网络兜底） =================
+# ================= 本地纯 Python 全维度综合归因引擎 =================
 def generate_comprehensive_local_attribution(records):
-    """对失误场次进行纯粹以‘提高命中率’为导向的深度解剖与军规萃取"""
     cases = []
     for r in records[:8]:
         cases.append(f"• 赛事【{r.get('match')}】 终场 {r.get('final_score')} | 欧盘[{r.get('audit_1x2')}] | 让球[{r.get('audit_handicap')}] | 进球数[{r.get('audit_goals')}]")
@@ -403,24 +385,19 @@ def generate_comprehensive_local_attribution(records):
     return report, rules_extracted
 
 def trigger_silent_auto_evolution(records):
-    """【静默自动进化监听引擎】：每新增 5 场失误，自动提炼军规，动态维护 Top 8 容量池"""
     all_failed = [
         r for r in records 
         if r.get("audit_handicap") == "未命中" or r.get("audit_goals") == "未命中" or r.get("audit_1x2") == "未命中"
     ]
     cur_failed_cnt = len(all_failed)
     
-    # 检查是否达标（满 5 场，且较上次进化新增了至少 5 场）
     if cur_failed_cnt >= 5 and (cur_failed_cnt - st.session_state.last_evolved_count) >= 5:
         _, new_rules = generate_comprehensive_local_attribution(all_failed)
-        
-        # 融入新军规，去重
         updated_rules = list(st.session_state.rules)
         for nr in new_rules:
             if nr not in updated_rules:
                 updated_rules.append(nr)
                 
-        # 强制收敛为最精炼的 8 条
         st.session_state.rules = updated_rules[-MAX_RULES_CAPACITY:]
         st.session_state.last_evolved_count = (cur_failed_cnt // 5) * 5
         save_rules(st.session_state.rules, st.session_state.last_evolved_count)
@@ -472,7 +449,7 @@ with tab1:
         elif not match_input.strip() and not uploaded_imgs:
             st.warning("请至少输入对阵球队或上传盘口走势截图！")
         else:
-            with st.spinner("双核引擎运作中：[Shin 无偏去抽水] + [动态泊松求解] + [黄金军规库过滤] + [全场最高把握锁定]..."):
+            with st.spinner("双核引擎运作中：[动态泊松求解] + [黄金军规库过滤] + [全场最高把握锁定]..."):
                 math_baseline = compute_dynamic_match_matrix(total_line=total_val, spread=spread_val)
                 
                 live_odds_info = "未配置 Odds API，以截图和输入盘口为准"
@@ -556,6 +533,8 @@ with tab1:
                         "match": display_name,
                         "model": used_model,
                         "report": result_text,
+                        "spread": spread_val,      # 永久持久化让球深度，对账零误差
+                        "total_line": total_val,  # 永久持久化大小球深度
                         "status": "待结算",
                         "final_score": "",
                         "audit_1x2": "待结算",
@@ -603,7 +582,6 @@ with tab2:
             with st.expander(f"【{current_status}】 {rec.get('date', '')} | {rec.get('match', '')}", expanded=(idx == 0)):
                 st.markdown(rec.get("report", ""))
                 
-                # 状态标签展示
                 st.markdown("##### 🔍 三维独立核验状态")
                 tag_c1, tag_c2, tag_c3 = st.columns(3)
                 
@@ -611,18 +589,18 @@ with tab2:
                 st_hand = rec.get('audit_handicap', '待结算')
                 st_g = rec.get('audit_goals', '待结算')
 
-                if st_1x2 == "已命中": tag_c1.success(f"欧盘胜平负：**已命中** ✅")
-                elif st_1x2 == "未命中": tag_c1.error(f"欧盘胜平负：**未命中** ❌")
-                else: tag_c1.info(f"欧盘胜平负：**待结算**")
+                if st_1x2 == "已命中": tag_c1.success("欧盘胜平负：**已命中** ✅")
+                elif st_1x2 == "未命中": tag_c1.error("欧盘胜平负：**未命中** ❌")
+                else: tag_c1.info("欧盘胜平负：**待结算**")
 
-                if st_hand == "已命中": tag_c2.success(f"让球胜平负：**已命中** ✅")
-                elif st_hand == "未命中": tag_c2.error(f"让球胜平负：**未命中** ❌")
-                elif st_hand == "走盘": tag_c2.warning(f"让球胜平负：**走盘** ⚖️")
-                else: tag_c2.info(f"让球胜平负：**待结算**")
+                if st_hand == "已命中": tag_c2.success("让球胜平负：**已命中** ✅")
+                elif st_hand == "未命中": tag_c2.error("让球胜平负：**未命中** ❌")
+                elif st_hand == "走盘": tag_c2.warning("让球胜平负：**走盘** ⚖️")
+                else: tag_c2.info("让球胜平负：**待结算**")
 
-                if st_g == "已命中": tag_c3.success(f"进球数双选：**已命中** ✅")
-                elif st_g == "未命中": tag_c3.error(f"进球数双选：**未命中** ❌")
-                else: tag_c3.info(f"进球数双选：**待结算**")
+                if st_g == "已命中": tag_c3.success("进球数双选：**已命中** ✅")
+                elif st_g == "未命中": tag_c3.error("进球数双选：**未命中** ❌")
+                else: tag_c3.info("进球数双选：**待结算**")
 
                 if rec.get("audit_note"):
                     st.caption(f"💡 审计明细摘要：{rec.get('audit_note')}")
@@ -639,7 +617,8 @@ with tab2:
                         if not target_s:
                             st.warning("⚠️ 请先在左侧输入终场比分（如 1-1）！")
                         else:
-                            res, err_msg = evaluate_score_locally(rec.get("report", ""), target_s)
+                            rec_spread = rec.get("spread", -0.25)
+                            res, err_msg = evaluate_score_locally(rec.get("report", ""), target_s, record_spread=rec_spread)
                             if err_msg:
                                 st.error(err_msg)
                             else:
@@ -651,10 +630,9 @@ with tab2:
                                 rec["audit_note"] = f"【本地秒级核销】{res['summary']}"
                                 save_history(st.session_state.records)
                                 
-                                # 静默监听触发自进化
                                 evolved, failed_cnt = trigger_silent_auto_evolution(st.session_state.records)
                                 if evolved:
-                                    st.toast(f"🎉 累计达 {failed_cnt} 场失误样本，系统已全自动完成模型自适应升级校准！", icon="🚀")
+                                    st.toast(f"🎉 累计达 {failed_cnt} 场失误样本，系统已全自动完成自适应升级校准！", icon="🚀")
                                 
                                 st.success(f"🎉 核销完成：【{res['status']}】")
                                 time.sleep(0.3)
@@ -731,9 +709,15 @@ with tab3:
                     if nr not in updated_rules:
                         updated_rules.append(nr)
                 st.session_state.rules = updated_rules[-MAX_RULES_CAPACITY:]
-                save_rules(st.session_state.rules, len(all_failed_records))
-
-                st.success("✅ 手动穿透完成！黄金军规池已更新！")
-                st.markdown(report_text)
-                time.sleep(0.5)
+                st.session_state.last_evolved_count = len(all_failed_records)
+                save_rules(st.session_state.rules, st.session_state.last_evolved_count)
+                
+                # 存入 session_state，刷新后依然稳定展示不闪退
+                st.session_state["latest_attribution_view"] = report_text
+                st.success("✅ 穿透完成！黄金军规池已成功迭代！")
                 st.rerun()
+
+    # 持久化展示归因报告，彻底杜绝闪退漏洞
+    if "latest_attribution_view" in st.session_state:
+        st.markdown("---")
+        st.markdown(st.session_state["latest_attribution_view"])
