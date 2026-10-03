@@ -10,14 +10,15 @@ from datetime import datetime
 
 # ================= 页面配置 =================
 st.set_page_config(
-    page_title="OmniQuant Cortex 机构级量化对冲中枢",
+    page_title="OmniQuant Cortex 机构级量化自进化对冲中枢",
     page_icon="⚽",
     layout="wide"
 )
 
 DATA_FILE = "prediction_history.json"
+RULES_FILE = "rules_vault.json"
 
-# ================= 数据持久化层 =================
+# ================= 数据与军规持久化层 =================
 def load_history():
     if os.path.exists(DATA_FILE):
         try:
@@ -32,17 +33,33 @@ def save_history(records):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        st.error(f"数据存档异常: {str(e)}")
+        st.error(f"对账存档异常: {str(e)}")
+
+def load_rules():
+    if os.path.exists(RULES_FILE):
+        try:
+            with open(RULES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_rules(rules):
+    try:
+        with open(RULES_FILE, "w", encoding="utf-8") as f:
+            json.dump(rules, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"军规存档异常: {str(e)}")
 
 if "records" not in st.session_state:
     st.session_state.records = load_history()
 
+if "rules" not in st.session_state:
+    st.session_state.rules = load_rules()
+
 # ================= 确定性数学层：Shin 去抽水与动态泊松 =================
 def shin_devigging(odds):
-    """
-    Shin (1992, 1993) 严格无偏去抽水算法
-    解出知情交易者占比 z 与无偏真实概率 (True Probabilities)
-    """
+    """Shin 严格无偏去抽水算法"""
     try:
         valid_odds = [float(o) for o in odds if float(o) > 1.0]
         if len(valid_odds) != 3:
@@ -82,10 +99,7 @@ def poisson_pmf(k, lmbda):
     return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
 def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
-    """
-    根据盘口大小球基准线与让球深度，数值反解两队预期进球 (Dynamic xG)
-    解出真实的 lambda_home 和 mu_away
-    """
+    """根据盘口大小球基准线与让球深度，数值反解两队预期进球"""
     home_xg = max(0.2, (total_line - spread) / 2.0)
     away_xg = max(0.2, (total_line + spread) / 2.0)
 
@@ -135,7 +149,7 @@ def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
     except Exception as e:
         return None, f"网络请求异常: {str(e)}"
 
-# ================= 侧边栏：系统管理 =================
+# ================= 侧边栏：系统管理与军规记忆库 =================
 with st.sidebar:
     st.header("⚙️ 机构对冲配置")
     bankroll = st.number_input("实战风控总本金 (单位: 元/USD)", min_value=1000, value=50000, step=5000)
@@ -146,6 +160,19 @@ with st.sidebar:
     odds_key_input = st.text_input("The Odds API Key (可选)", type="password")
     st.caption("提示：云端已配置 Secrets 时后台将自动静默调用")
     
+    st.markdown("---")
+    st.subheader(f"🛡️ 避坑军规库 ({len(st.session_state.rules)}条已生效)")
+    if st.session_state.rules:
+        for idx, rule in enumerate(st.session_state.rules):
+            st.caption(f"{idx+1}. {rule}")
+        if st.button("🗑️ 清空所有已学生成军规"):
+            st.session_state.rules = []
+            save_rules([])
+            st.success("军规库已重置！")
+            st.rerun()
+    else:
+        st.caption("暂无回灌军规，在 Tab 3 进行错题归因后可一键注入。")
+
     st.markdown("---")
     st.subheader("💾 数据库全量热备份")
     json_str = json.dumps(st.session_state.records, ensure_ascii=False, indent=2)
@@ -233,56 +260,91 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
             continue
     return None, None, last_err
 
+def calculate_composite_status(r_1x2, r_handicap, r_goals):
+    """计算三维综合成色"""
+    if r_1x2 == "待结算" or r_handicap == "待结算" or r_goals == "待结算":
+        return "待结算"
+    
+    hits = 0
+    if r_1x2 == "已命中": hits += 1
+    if r_handicap == "已命中": hits += 1
+    if r_goals == "已命中": hits += 1
+    
+    if hits == 3:
+        return "全红极佳 (3/3)"
+    elif hits == 2:
+        return "双红达标 (2/3)"
+    elif hits == 1:
+        return "单红偏离 (1/3)"
+    else:
+        return "全黑盲区 (0/3)"
+
 def auto_search_and_settle(api_key, match_name, match_date, report_text):
-    """通过 Google 联网搜索比分并全自动核销"""
+    """通过 Google 联网搜索比分并对【欧盘、让球、进球数】三项独立严格核销"""
     prompt = (
         "你是一名绝对客观的体育赛事官方核销审计员，拥有实时联网搜索权限。\n\n"
         "【任务指令】：\n"
         f"1. 请立即通过 Google 搜索查找以下赛事的官方终场比分（全场完赛比分）：\n"
         f"   - 对阵双方：{match_name}\n"
         f"   - 推演记录时间：{match_date}\n"
-        "2. 若比赛尚未开打或进行中，状态标记为「待结算」，比分填「待定」。\n"
-        "3. 若比赛已完赛：\n"
-        "   - 提取真实终场比分（如 1-2）；\n"
-        "   - 对照下方推演报告摘要，比对欧盘胜平负、让球胜平负、进球数两选；\n"
-        "   - 严格核销：核心让球或欧盘打出为「已命中」，反向失误为「未命中」，整数盘为「走盘」。\n\n"
+        "2. 若比赛尚未开打或进行中，final_score 填「待定」，三项判定均填「待结算」。\n"
+        "3. 若比赛已完赛，请根据真实比分，对推演报告的三个核心项分别独立判定：\n"
+        "   - 项一【欧盘胜平负】：打出填「已命中」，失误填「未命中」；\n"
+        "   - 项二【让球胜平负】：结合报告让球盘计算，打出填「已命中」，失误填「未命中」，退盘填「走盘」；\n"
+        "   - 项三【多选总进球数】：总进球落在精选两项内填「已命中」，否则填「未命中」。\n\n"
         f"【历史推演报告摘要】：\n{report_text[:1400]}\n\n"
         "【输出格式要求】：\n"
-        "请直接输出标准 JSON 对象，字段必须包含：\n"
+        "请直接输出标准 JSON 对象，字段必须严格包含：\n"
         "final_score: 实际完赛比分(如 1-2，未开赛填 待定)\n"
-        "status: 已命中 / 未命中 / 走盘 / 待结算\n"
-        "summary: 一句话判定明细（例如：联网检索终场比分 1-2，客胜打出，让负命中）\n"
+        "audit_1x2: 已命中 / 未命中 / 待结算\n"
+        "audit_handicap: 已命中 / 未命中 / 走盘 / 待结算\n"
+        "audit_goals: 已命中 / 未命中 / 待结算\n"
+        "summary: 一句话明细（例如：比分1-2，欧盘客胜(红)，让负(红)，进球数3球(黑)）\n"
     )
     result_text, _, err = call_gemini_engine(api_key, prompt, enable_search=True)
     parsed = extract_json_from_text(result_text)
     if parsed:
-        return parsed.get("final_score", ""), parsed.get("status", "待结算"), parsed.get("summary", "")
-    return "", "待结算", f"联网检索核销异常: {err}"
+        score = parsed.get("final_score", "")
+        r_1x2 = parsed.get("audit_1x2", "待结算")
+        r_handicap = parsed.get("audit_handicap", "待结算")
+        r_goals = parsed.get("audit_goals", "待结算")
+        status = calculate_composite_status(r_1x2, r_handicap, r_goals)
+        return score, r_1x2, r_handicap, r_goals, status, parsed.get("summary", "")
+    return "", "待结算", "待结算", "待结算", "待结算", f"联网检索核销异常: {err}"
 
 def auto_evaluate_with_given_score(api_key, report_text, final_score):
-    """已有明确比分时，秒级智能核销"""
+    """已有明确比分时，对【欧盘、让球、进球数】三项秒级独立核销"""
     prompt = (
-        "你是一名客观的体育量化复盘审计员。请根据【终场比分】和【推演报告摘要】，精确核销赛果。\n\n"
+        "你是一名客观的体育量化复盘审计员。请根据【终场比分】和【推演报告摘要】，对三项预测独立逐笔核销。\n\n"
         f"【终场比分】：{final_score}\n"
         f"【推演报告摘要】：\n{report_text[:1400]}\n\n"
-        "【核算规则】：\n"
-        "1. 结算终场胜负平、让球盘后赛果、双方总进球数。\n"
-        "2. 对照报告结论：核心让球或欧盘打出为「已命中」，反向失误为「未命中」，走盘为「走盘」。\n\n"
+        "【核销铁律】：\n"
+        "1. 独立核查项一【欧盘胜平负】：打出填「已命中」，反向填「未命中」；\n"
+        "2. 独立核查项二【让球胜平负】：结合报告让球数计算，打出填「已命中」，失误填「未命中」，整数盘填「走盘」；\n"
+        "3. 独立核查项三【多选总进球数】：总进球落在推荐的两项内填「已命中」，否则填「未命中」。\n\n"
         "【输出格式要求】：\n"
-        "请直接输出标准 JSON 对象，包含字段：status（已命中/未命中/走盘）和 summary（判定明细字符串）。\n"
+        "请直接输出标准 JSON 对象，字段必须包含：\n"
+        "audit_1x2: 已命中 / 未命中\n"
+        "audit_handicap: 已命中 / 未命中 / 走盘\n"
+        "audit_goals: 已命中 / 未命中\n"
+        "summary: 一句话明细（例如：欧盘(红)，让球(红)，进球数(黑)）\n"
     )
     result_text, _, err = call_gemini_engine(api_key, prompt, enable_search=False)
     parsed = extract_json_from_text(result_text)
     if parsed:
-        return parsed.get("status", "待结算"), parsed.get("summary", "")
-    return "待结算", f"核销计算异常: {err}"
+        r_1x2 = parsed.get("audit_1x2", "待结算")
+        r_handicap = parsed.get("audit_handicap", "待结算")
+        r_goals = parsed.get("audit_goals", "待结算")
+        status = calculate_composite_status(r_1x2, r_handicap, r_goals)
+        return r_1x2, r_handicap, r_goals, status, parsed.get("summary", "")
+    return "待结算", "待结算", "待结算", "待结算", f"核销计算异常: {err}"
 
 # ================= 页面主交互导航 =================
-tab1, tab2, tab3 = st.tabs(["🚀 实时双核量化推演", "📋 历史对账与 CLV 结算", "🧠 错题归因与策略进化"])
+tab1, tab2, tab3 = st.tabs(["🚀 实时双核量化推演", "📋 历史对账与三维结算", "🧠 错题归因与自适应进化"])
 
 # ----------------- Tab 1: 实时推演 -----------------
 with tab1:
-    st.subheader("⚽ 赛事微观结构与剧本突变决策引擎（终极真全量版）")
+    st.subheader("⚽ 赛事微观结构与剧本突变决策引擎（终极自进化版）")
     
     col_in1, col_in2 = st.columns([1, 1])
     with col_in1:
@@ -308,6 +370,13 @@ with tab1:
         for i, img_file in enumerate(uploaded_imgs):
             cols[i % len(cols)].image(img_file, caption=f"数据图 {i+1}", use_container_width=True)
 
+    # 动态组装已学军规提示词
+    rules_context = ""
+    if st.session_state.rules:
+        rules_context = "【系统历史错题已进化生效的硬性避坑军规（最高优先级必须严格遵守）】：\n"
+        for idx, r in enumerate(st.session_state.rules):
+            rules_context += f"{idx+1}. {r}\n"
+
     btn_predict = st.button("🚀 启动工业级双核量化推演并持久化存盘")
 
     if btn_predict:
@@ -315,7 +384,7 @@ with tab1:
             st.error("未检测到有效密钥，请在侧边栏或 Secrets 中配置 Gemini API Key！")
         else:
             is_zero_input = (not match_input.strip() and not uploaded_imgs)
-            spinner_text = "未输入信息，正在全网搜索今日最火热足球焦点赛事及最新赔率盘口..." if is_zero_input else "全量双核引擎运作中：[Shin 数学去抽水] + [动态 xG 求解] + [多图操盘识别] + [Game-State 突变演进]..."
+            spinner_text = "未输入信息，正在全网搜索今日最火热足球焦点赛事及最新赔率盘口..." if is_zero_input else "全量自进化双核引擎运作中：[Shin 去抽水] + [动态 xG 求解] + [军规库强制过滤] + [Game-State 突变演进]..."
             
             with st.spinner(spinner_text):
                 math_baseline = compute_dynamic_match_matrix(total_line=total_val, spread=spread_val)
@@ -333,6 +402,7 @@ with tab1:
                         "1. 立即联网搜索今日或今晚即将进行的全球最受瞩目足球焦点比赛，确定 1 场重点对阵双方。\n"
                         "2. 检索该场比赛最新的做市商赔率、主流让球盘口与大小球盘口。\n"
                         "3. 严格按照顶级标准输出完整量化分析：操盘模式、剧本突变对冲指令、临界入场赔率、亚盘大小球、自洽比分与凯利仓位。\n"
+                        f"\n{rules_context}\n"
                     )
                     enable_s = True
                 else:
@@ -342,6 +412,8 @@ with tab1:
 
 【赛事信息】：{match_input if match_input else '详见上传截图中的赛事对阵'}
 【外部实时做市商接口状态】：{live_odds_info}
+
+{rules_context}
 
 【本地确定性数理求解器动态输出（Python 硬核计算）】：
 - 盘口动态解算预期进球 (Dynamic xG)：主队预期攻门 $\\lambda = {math_baseline['home_xg']}$ | 客队预期攻门 $\\mu = {math_baseline['away_xg']}$
@@ -417,6 +489,9 @@ with tab1:
                         "report": result_text,
                         "status": "待结算",
                         "final_score": "",
+                        "audit_1x2": "待结算",
+                        "audit_handicap": "待结算",
+                        "audit_goals": "待结算",
                         "clv_beaten": "待测算",
                         "audit_note": "",
                         "notes": ""
@@ -427,39 +502,52 @@ with tab1:
                 else:
                     st.error(f"接口响应异常：{err}")
 
-# ----------------- Tab 2: 历史对账与 CLV 结算 -----------------
+# ----------------- Tab 2: 历史对账与三维结算 -----------------
 with tab2:
-    st.subheader("📋 推演历史对账与收盘价值（CLV）结算")
+    st.subheader("📋 推演历史对账与三维独立核销")
     if not st.session_state.records:
         st.info("暂无历史推演存档。请在【实时双核量化推演】中生成首次分析。")
     else:
         pending_list = [r for r in st.session_state.records if r.get("status") == "待结算"]
-        settled_count = len([r for r in st.session_state.records if r.get("status") != "待结算"])
-        hit_count = len([r for r in st.session_state.records if r.get("status") == "已命中"])
-        win_rate = (hit_count / settled_count * 100) if settled_count > 0 else 0.0
+        settled_records = [r for r in st.session_state.records if r.get("status") != "待结算"]
+        settled_count = len(settled_records)
 
-        col1, col2, col3, col4 = st.columns([1.5, 1.5, 1.5, 3.5])
-        col1.metric("累计推演", f"{len(st.session_state.records)} 场")
-        col2.metric("已完成结算", f"{settled_count} 场")
-        col3.metric("实战胜率", f"{win_rate:.1f}%")
-        
-        with col4:
-            st.write("")
-            if pending_list and st.button(f"⚡ 一键全网检索核销所有待结算（{len(pending_list)}场）"):
+        hit_1x2 = len([r for r in settled_records if r.get("audit_1x2") == "已命中"])
+        hit_handicap = len([r for r in settled_records if r.get("audit_handicap") == "已命中"])
+        hit_goals = len([r for r in settled_records if r.get("audit_goals") == "已命中"])
+        all_hit = len([r for r in settled_records if "3/3" in r.get("status", "")])
+
+        rate_1x2 = (hit_1x2 / settled_count * 100) if settled_count > 0 else 0.0
+        rate_handicap = (hit_handicap / settled_count * 100) if settled_count > 0 else 0.0
+        rate_goals = (hit_goals / settled_count * 100) if settled_count > 0 else 0.0
+        rate_all = (all_hit / settled_count * 100) if settled_count > 0 else 0.0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("欧盘独立胜率", f"{rate_1x2:.1f}%", f"{hit_1x2}/{settled_count} 场")
+        m2.metric("让球独立胜率", f"{rate_handicap:.1f}%", f"{hit_handicap}/{settled_count} 场")
+        m3.metric("进球数双选胜率", f"{rate_goals:.1f}%", f"{hit_goals}/{settled_count} 场")
+        m4.metric("3/3 全红率", f"{rate_all:.1f}%", f"{all_hit}/{settled_count} 场")
+
+        if pending_list:
+            st.markdown("---")
+            if st.button(f"⚡ 一键全网检索核销所有待结算（共 {len(pending_list)} 场）"):
                 if not gemini_api_key:
                     st.error("请先配置 Gemini API Key！")
                 else:
-                    with st.spinner("正在全网检索官方终场比分并批量核销..."):
+                    with st.spinner("正在全网检索官方终场比分并对【欧盘/让球/进球数】三项逐笔核销..."):
                         for r in pending_list:
-                            s_score, s_status, s_note = auto_search_and_settle(
+                            score, a_1x2, a_hand, a_g, st_comp, note = auto_search_and_settle(
                                 gemini_api_key, r.get("match", ""), r.get("date", ""), r.get("report", "")
                             )
-                            if s_status != "待结算":
-                                r["final_score"] = s_score
-                                r["status"] = s_status
-                                r["audit_note"] = s_note
+                            if st_comp != "待结算":
+                                r["final_score"] = score
+                                r["audit_1x2"] = a_1x2
+                                r["audit_handicap"] = a_hand
+                                r["audit_goals"] = a_g
+                                r["status"] = st_comp
+                                r["audit_note"] = note
                         save_history(st.session_state.records)
-                        st.success("批量联网核销执行完毕！")
+                        st.success("批量独立核销执行完毕！")
                         st.rerun()
 
         st.markdown("---")
@@ -467,108 +555,163 @@ with tab2:
         for idx, rec in enumerate(st.session_state.records):
             with st.expander(f"【{rec.get('status', '待结算')}】 {rec.get('date', '')} | {rec.get('match', '')}", expanded=(idx == 0)):
                 st.markdown(rec.get("report", ""))
+                
+                st.markdown("##### 🔍 三维独立核验状态")
+                tag_c1, tag_c2, tag_c3 = st.columns(3)
+                tag_c1.info(f"欧盘胜平负：**{rec.get('audit_1x2', '待结算')}**")
+                tag_c2.info(f"让球胜平负：**{rec.get('audit_handicap', '待结算')}**")
+                tag_c3.info(f"进球数双选：**{rec.get('audit_goals', '待结算')}**")
+
                 if rec.get("audit_note"):
-                    st.info(f"💡 对账审计摘要：{rec.get('audit_note')}")
+                    st.caption(f"💡 审计明细摘要：{rec.get('audit_note')}")
                 st.markdown("---")
                 
-                c1, c2, c3 = st.columns([2.5, 2, 2])
+                c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5])
                 with c1:
                     score = st.text_input("终场比分（留空直接联网搜）", value=rec.get("final_score", ""), key=f"score_{rec['id']}")
                 with c2:
-                    status_option = st.selectbox(
-                        "结算判定",
-                        ["待结算", "已命中", "未命中", "走盘"],
-                        index=["待结算", "已命中", "未命中", "走盘"].index(rec.get("status", "待结算")),
-                        key=f"status_{rec['id']}"
-                    )
+                    edit_1x2 = st.selectbox("欧盘判定", ["待结算", "已命中", "未命中"], 
+                                            index=["待结算", "已命中", "未命中"].index(rec.get("audit_1x2", "待结算")), 
+                                            key=f"ed_1x2_{rec['id']}")
                 with c3:
-                    clv_option = st.selectbox(
-                        "CLV 收盘价值",
-                        ["跑赢终盘 (+CLV)", "落后终盘 (-CLV)", "平盘持平", "待测算"],
-                        index=["跑赢终盘 (+CLV)", "落后终盘 (-CLV)", "平盘持平", "待测算"].index(rec.get("clv_beaten", "待测算")),
-                        key=f"clv_{rec['id']}"
-                    )
+                    edit_hand = st.selectbox("让球判定", ["待结算", "已命中", "未命中", "走盘"], 
+                                             index=["待结算", "已命中", "未命中", "走盘"].index(rec.get("audit_handicap", "待结算")), 
+                                             key=f"ed_hand_{rec['id']}")
+                with c4:
+                    edit_g = st.selectbox("进球数判定", ["待结算", "已命中", "未命中"], 
+                                          index=["待结算", "已命中", "未命中"].index(rec.get("audit_goals", "待结算")), 
+                                          key=f"ed_g_{rec['id']}")
                 
                 b_col1, b_col2, b_col3 = st.columns([3, 3, 2])
                 with b_col1:
-                    if st.button("🌐 联网查比分并自动核销", key=f"btn_search_{rec['id']}"):
+                    if st.button("🌐 联网查比分并三维核销", key=f"btn_search_{rec['id']}"):
                         if not gemini_api_key:
                             st.error("请先配置 Gemini API Key！")
                         else:
-                            with st.spinner(f"正在联网核查【{rec.get('match')}】完赛比分..."):
-                                s_score, s_status, s_note = auto_search_and_settle(
+                            with st.spinner(f"正在全网检索【{rec.get('match')}】完赛比分并逐项核销..."):
+                                s, a_1x2, a_hand, a_g, st_comp, note = auto_search_and_settle(
                                     gemini_api_key, rec.get("match", ""), rec.get("date", ""), rec.get("report", "")
                                 )
-                                rec["final_score"] = s_score
-                                rec["status"] = s_status
-                                rec["audit_note"] = s_note
+                                rec["final_score"] = s
+                                rec["audit_1x2"] = a_1x2
+                                rec["audit_handicap"] = a_hand
+                                rec["audit_goals"] = a_g
+                                rec["status"] = st_comp
+                                rec["audit_note"] = note
                                 save_history(st.session_state.records)
-                                st.success(f"核销完成：【{s_status}】比分：{s_score} - {s_note}")
+                                st.success(f"核销完成：【{st_comp}】比分：{s}")
                                 st.rerun()
                 with b_col2:
-                    if st.button("⚡ 依据此比分直接核销", key=f"btn_calc_{rec['id']}"):
+                    if st.button("⚡ 依据此比分三维核销", key=f"btn_calc_{rec['id']}"):
                         if not score.strip():
-                            st.warning("比分框为空，请先填写比分或点击左侧联网核销！")
+                            st.warning("比分框为空，请先填写比分！")
                         elif not gemini_api_key:
                             st.error("请先配置 Gemini API Key！")
                         else:
-                            with st.spinner("AI 正在根据指定比分核销赛果..."):
-                                auto_status, auto_note = auto_evaluate_with_given_score(
+                            with st.spinner("AI 正在根据指定比分独立核销三项赛果..."):
+                                a_1x2, a_hand, a_g, st_comp, note = auto_evaluate_with_given_score(
                                     gemini_api_key, rec.get("report", ""), score.strip()
                                 )
                                 rec["final_score"] = score.strip()
-                                rec["status"] = auto_status
-                                rec["audit_note"] = auto_note
+                                rec["audit_1x2"] = a_1x2
+                                rec["audit_handicap"] = a_hand
+                                rec["audit_goals"] = a_g
+                                rec["status"] = st_comp
+                                rec["audit_note"] = note
                                 save_history(st.session_state.records)
-                                st.success(f"核销完成：【{auto_status}】 - {auto_note}")
+                                st.success(f"核销完成：【{st_comp}】")
                                 st.rerun()
                 with b_col3:
-                    if st.button("💾 仅保存更改", key=f"btn_save_{rec['id']}"):
+                    if st.button("💾 手动保存判定", key=f"btn_save_{rec['id']}"):
                         rec["final_score"] = score
-                        rec["status"] = status_option
-                        rec["clv_beaten"] = clv_option
+                        rec["audit_1x2"] = edit_1x2
+                        rec["audit_handicap"] = edit_hand
+                        rec["audit_goals"] = edit_g
+                        rec["status"] = calculate_composite_status(edit_1x2, edit_hand, edit_g)
                         save_history(st.session_state.records)
-                        st.success("已手动保存！")
+                        st.success("判定已手动保存！")
                         st.rerun()
 
-# ----------------- Tab 3: 错题归因与策略进化 -----------------
+# ----------------- Tab 3: 错题归因与自适应进化 -----------------
 with tab3:
-    st.subheader("🧠 错题归因与策略自我进化（AI 蒸馏中枢）")
-    st.caption("自动归纳未命中比赛的做市商操盘共性，逆向萃取防诱盘规则")
+    st.subheader("🧠 错题归因与策略自我进化（AI 蒸馏与军规回灌中枢）")
+    st.caption("分流定位【让球诱盘失误】、【进球数突变失误】与【欧盘冷门失误】，针对性逆向萃取避坑军规并直接回灌系统")
 
-    failed_records = [r for r in st.session_state.records if r.get("status") == "未命中"]
+    handicap_fails = [r for r in st.session_state.records if r.get("audit_handicap") == "未命中"]
+    goals_fails = [r for r in st.session_state.records if r.get("audit_goals") == "未命中"]
+    ox_fails = [r for r in st.session_state.records if r.get("audit_1x2") == "未命中"]
 
-    if not failed_records:
-        st.success("暂无【未命中】失误记录，量化策略运行稳健。")
-    else:
-        st.warning(f"检测到当前有 {len(failed_records)} 场【未命中】样本，可用于提取防诱盘硬规则。")
+    f_col1, f_col2, f_col3 = st.columns(3)
+    f_col1.warning(f"让球未命中：**{len(handicap_fails)}** 场")
+    f_col2.warning(f"进球数未命中：**{len(goals_fails)}** 场")
+    f_col3.warning(f"欧盘未命中：**{len(ox_fails)}** 场")
 
-        if st.button("🔥 启动工业级错题深度归因分析"):
-            if not gemini_api_key:
-                st.error("请先配置 Gemini API Key！")
-            else:
-                with st.spinner("AI 正在比对做市商初终盘水位与赛果，提炼认知偏差与诱盘特征..."):
-                    review_cases = []
-                    for r in failed_records[:5]:
-                        review_cases.append(f"""
+    st.markdown("---")
+    
+    review_dim = st.radio("选择专项深度归因维度：", 
+                          ["专项归因：让球盘失误（主攻做市商诱盘/阻盘识别）", "专项归因：进球数失误（主攻 Game-State 突变剧本）", "全维度综合解剖"],
+                          horizontal=True)
+
+    if st.button("🔥 启动工业级专项错题深度归因分析"):
+        if not gemini_api_key:
+            st.error("请先配置 Gemini API Key！")
+        else:
+            with st.spinner("AI 正在提取失误场次的盘口特征，定向提炼针对性避坑军规..."):
+                cases = []
+                target_records = []
+                
+                if "让球" in review_dim:
+                    target_records = handicap_fails
+                    focus_text = "重点深度审查：做市商浅盘诱热、假退盘阻击、升水诱下的微观操盘手法，为何让球盘失误？"
+                elif "进球数" in review_dim:
+                    target_records = goals_fails
+                    focus_text = "重点深度审查：Game-State 比分突变连锁反应，弱队率先进球后强队压上反击对进球数的膨胀破坏力，为何进球数预估失真？"
+                else:
+                    target_records = [r for r in st.session_state.records if "全黑" in r.get("status", "") or "单红" in r.get("status", "")]
+                    focus_text = "综合深度审查：三项中失误两项以上的全盘认知盲区。"
+
+                if not target_records:
+                    st.success("所选维度暂无失误样本，策略运行良好！")
+                else:
+                    for r in target_records[:5]:
+                        cases.append(f"""
 - 赛事：{r.get('match')}
 - 终场比分：{r.get('final_score', '未知')}
-- 审计记录：{r.get('audit_note', '无')}
+- 独立核销：欧盘[{r.get('audit_1x2')}] | 让球[{r.get('audit_handicap')}] | 进球数[{r.get('audit_goals')}]
+- 审计明细：{r.get('audit_note', '无')}
 - 推演摘要：{r.get('report')[:350]}...
 """)
 
                     review_prompt = f"""
-你是一名资深体育量化对冲基金复盘专家。以下是量化模型近期失误（黑单）的实战案例：
+你是一名资深体育量化对冲基金复盘专家。以下是量化模型近期失误的实战样本：
 
-{''.join(review_cases)}
+{''.join(cases)}
 
-请对以上失误场次进行系统性深度归因分析：
-1. **偏差根因**：做市商是否采用了浅盘诱热、假退盘阻击、升水诱下等手法？模型在哪个环节产生了认知幻觉？
-2. **防诱盘军规提炼**：请提炼出 3 条明确具体的「反做市商避坑规则」（针对特定盘口、水位的硬性约束）。
-3. **参数/置信度校准建议**：后续在此类盘口下，模型应如何降低置信度或直接放弃？
+【定向审查重点】：
+{focus_text}
+
+请严格按以下工业化结构输出深度归因报告：
+1. **偏差根因穿透**：失误究竟发生在数据层（伤停未识别）、博弈层（做市商操盘诱盘）、还是剧本突变层（比分突变导致大球膨胀）？
+2. **专项防诱盘/防突变军规（提炼 3 条可直接执行的硬核规矩）**：必须用编号 1、2、3 输出精简具体的避坑约束。
+3. **参数校准方案**：在后续推演中应如何调整置信度或下注纪律？
 """
                     review_result, model_used, err = call_gemini_engine(gemini_api_key, review_prompt)
                     if review_result:
+                        st.session_state["latest_review"] = review_result
                         st.markdown(review_result)
                     else:
                         st.error(f"归因分析失败: {err}")
+
+    # 一键回灌模块
+    if "latest_review" in st.session_state:
+        st.markdown("---")
+        st.markdown("#### 🚀 一键自适应进化回灌")
+        new_rule_input = st.text_input("将上述提炼出的核心军规填入此处（例如：当机构临场从半球退平半且必发主胜占比超75%时严禁选让胜）")
+        if st.button("💾 确认将此军规注入推演中枢"):
+            if new_rule_input.strip():
+                st.session_state.rules.append(new_rule_input.strip())
+                save_rules(st.session_state.rules)
+                st.success("🎉 军规已成功注入系统记忆库！下一次推演将强制执行此约束！")
+                st.rerun()
+            else:
+                st.warning("请先填入军规内容！")
