@@ -218,9 +218,9 @@ def extract_json_from_text(text):
             pass
     return None
 
-# ================= 多模态与联网搜索推理调度 =================
+# ================= 多模态与联网搜索推理调度（已切换最新 3.8 模型） =================
 def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False):
-    models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    models = ["gemini-3.8-flash", "gemini-2.5-flash"]
     headers = {"Content-Type": "application/json"}
     
     parts = [{"text": prompt}]
@@ -370,7 +370,6 @@ with tab1:
         for i, img_file in enumerate(uploaded_imgs):
             cols[i % len(cols)].image(img_file, caption=f"数据图 {i+1}", use_container_width=True)
 
-    # 动态组装已学军规提示词
     rules_context = ""
     if st.session_state.rules:
         rules_context = "【系统历史错题已进化生效的硬性避坑军规（最高优先级必须严格遵守）】：\n"
@@ -702,7 +701,6 @@ with tab3:
                     else:
                         st.error(f"归因分析失败: {err}")
 
-    # 一键回灌模块
     if "latest_review" in st.session_state:
         st.markdown("---")
         st.markdown("#### 🚀 一键自适应进化回灌")
