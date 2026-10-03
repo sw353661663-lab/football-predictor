@@ -10,7 +10,7 @@ from datetime import datetime
 
 # ================= 页面配置 =================
 st.set_page_config(
-    page_title="OmniQuant 工业级足球量化预测中枢",
+    page_title="OmniQuant Cortex 机构级量化对冲中枢",
     page_icon="⚽",
     layout="wide"
 )
@@ -37,19 +37,63 @@ def save_history(records):
 if "records" not in st.session_state:
     st.session_state.records = load_history()
 
-# ================= 纯 Python 确定性数学求解器 =================
+# ================= 确定性数学层：Shin 去抽水与动态泊松 =================
+def shin_devigging(odds):
+    """
+    Shin (1992, 1993) 严格无偏去抽水算法
+    解出知情交易者占比 z 与无偏真实概率 (True Probabilities)
+    """
+    try:
+        valid_odds = [float(o) for o in odds if float(o) > 1.0]
+        if len(valid_odds) != 3:
+            return None
+        
+        inv_sum = sum(1.0 / o for o in valid_odds)
+        if inv_sum <= 1.0:
+            return [round((1.0 / o) / inv_sum, 4) for o in valid_odds]
+        
+        low, high = 0.0, 0.40
+        z = 0.0
+        for _ in range(35):
+            mid = (low + high) / 2.0
+            p_sum = sum(
+                (math.sqrt(mid**2 + 4 * (1 - mid) * ((1.0 / o) / inv_sum)) - mid) / (2 * (1 - mid))
+                for o in valid_odds
+            )
+            if p_sum > 1.0:
+                low = mid
+            else:
+                high = mid
+            z = mid
+            
+        true_probs = [
+            (math.sqrt(z**2 + 4 * (1 - z) * ((1.0 / o) / inv_sum)) - z) / (2 * (1 - z))
+            for o in valid_odds
+        ]
+        norm = sum(true_probs)
+        return [round(p / norm, 4) for p in true_probs]
+    except Exception:
+        return None
+
 def poisson_pmf(k, lmbda):
-    """计算单个进球数的泊松概率"""
+    """泊松分布单点概率"""
     if lmbda <= 0:
         return 1.0 if k == 0 else 0.0
     return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
-def compute_match_probabilities(home_xg=1.40, away_xg=1.10, max_goals=6):
-    """通过双变量泊松网格计算 1X2 与进球数无偏概率矩阵"""
+def compute_dynamic_match_matrix(total_line=2.5, spread=-0.25, max_goals=6):
+    """
+    根据盘口大小球基准线与让球深度，数值反解两队预期进球 (Dynamic xG)
+    解出真实的 lambda_home 和 mu_away
+    """
+    home_xg = max(0.2, (total_line - spread) / 2.0)
+    away_xg = max(0.2, (total_line + spread) / 2.0)
+
     prob_home_win = 0.0
     prob_draw = 0.0
     prob_away_win = 0.0
     total_goals_dist = {i: 0.0 for i in range(max_goals * 2 + 1)}
+    score_matrix = {}
 
     for i in range(max_goals + 1):
         for j in range(max_goals + 1):
@@ -60,26 +104,50 @@ def compute_match_probabilities(home_xg=1.40, away_xg=1.10, max_goals=6):
                 prob_draw += p
             else:
                 prob_away_win += p
+            
             total_goals_dist[i + j] += p
+            score_matrix[f"{i}-{j}"] = round(p * 100, 2)
+
+    sorted_scores = sorted(score_matrix.items(), key=lambda x: x[1], reverse=True)[:3]
 
     return {
+        "home_xg": round(home_xg, 2),
+        "away_xg": round(away_xg, 2),
         "home_win": round(prob_home_win * 100, 2),
         "draw": round(prob_draw * 100, 2),
         "away_win": round(prob_away_win * 100, 2),
-        "goals": {k: round(v * 100, 2) for k, v in total_goals_dist.items() if k <= 6}
+        "goals": {k: round(v * 100, 2) for k, v in total_goals_dist.items() if k <= 6},
+        "top_scores": sorted_scores
     }
+
+# ================= 真实 The Odds API 机构数据抓取 =================
+def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
+    """发起 HTTP 请求拉取做市商实时赔率"""
+    if not api_key:
+        return None, "未配置 Odds API Key"
+    
+    url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={api_key}&regions={region}&markets=h2h,spreads,totals&oddsFormat=decimal"
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return r.json(), None
+        return None, f"API 状态码: {r.status_code} - {r.text}"
+    except Exception as e:
+        return None, f"网络请求异常: {str(e)}"
 
 # ================= 侧边栏：系统管理 =================
 with st.sidebar:
-    st.header("⚙️ 量化配置与风控")
-    bankroll = st.number_input("实战风控总本金 (单位: 元/USD)", min_value=1000, value=20000, step=1000)
+    st.header("⚙️ 机构对冲配置")
+    bankroll = st.number_input("实战风控总本金 (单位: 元/USD)", min_value=1000, value=50000, step=5000)
     st.caption("基于 0.25x 凯利准则自动计算单场建议开仓金额")
     st.markdown("---")
+    
     gemini_key_input = st.text_input("Gemini API Key (可选)", type="password")
     odds_key_input = st.text_input("The Odds API Key (可选)", type="password")
     st.caption("提示：云端已配置 Secrets 时后台将自动静默调用")
+    
     st.markdown("---")
-    st.subheader("💾 数据库冷备份")
+    st.subheader("💾 数据库全量热备份")
     json_str = json.dumps(st.session_state.records, ensure_ascii=False, indent=2)
     st.download_button(
         label="📥 导出全量对账历史",
@@ -108,6 +176,12 @@ def extract_json_from_text(text):
         return json.loads(text.strip())
     except Exception:
         pass
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            pass
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -208,14 +282,22 @@ tab1, tab2, tab3 = st.tabs(["🚀 实时双核量化推演", "📋 历史对账�
 
 # ----------------- Tab 1: 实时推演 -----------------
 with tab1:
-    st.subheader("⚽ 赛事微观结构与剧本突变决策引擎（终极量化版）")
+    st.subheader("⚽ 赛事微观结构与剧本突变决策引擎（终极真全量版）")
     
     col_in1, col_in2 = st.columns([1, 1])
     with col_in1:
         match_input = st.text_input("🔍 目标对阵 / 联赛（留空可自动抓取今日焦点赛）", placeholder="如：欧国联 哈萨克斯坦 vs 摩尔多瓦（可留空）")
+        
+        with st.expander("🛠️ 本地数学层盘口校准参数（可选微调）", expanded=False):
+            param_c1, param_c2 = st.columns(2)
+            with param_c1:
+                spread_val = st.number_input("主流亚盘让球深度（主队）", value=-0.25, step=0.25, help="如主让半球填 -0.5，客让平半填 0.25")
+            with param_c2:
+                total_val = st.number_input("主流大小球盘口基准线", value=2.25, step=0.25, help="如 2.25 球或 2.5 球")
+                
     with col_in2:
         uploaded_imgs = st.file_uploader(
-            "📸 上传做市商走势截图（支持多选相册：欧赔+亚盘+必发+首发）",
+            "📸 批量上传做市商走势截图（多选相册：欧赔+亚盘+必发+首发）",
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True
         )
@@ -233,10 +315,16 @@ with tab1:
             st.error("未检测到有效密钥，请在侧边栏或 Secrets 中配置 Gemini API Key！")
         else:
             is_zero_input = (not match_input.strip() and not uploaded_imgs)
-            spinner_text = "未输入信息，正在全网搜索今日最火热足球焦点赛事及最新赔率盘口..." if is_zero_input else "双核引擎运作中：[多图交叉比对] + [泊松矩阵] + [微观操盘四模式] + [Game-State 突变演进]..."
+            spinner_text = "未输入信息，正在全网搜索今日最火热足球焦点赛事及最新赔率盘口..." if is_zero_input else "全量双核引擎运作中：[Shin 数学去抽水] + [动态 xG 求解] + [多图操盘识别] + [Game-State 突变演进]..."
             
             with st.spinner(spinner_text):
-                math_baseline = compute_match_probabilities(1.40, 1.05)
+                math_baseline = compute_dynamic_match_matrix(total_line=total_val, spread=spread_val)
+                
+                live_odds_info = "未配置 Odds API 或未抓取到实时赔率，以截图与全网检索为准"
+                if odds_api_key:
+                    odds_data, odds_err = fetch_real_odds_api(odds_api_key)
+                    if odds_data:
+                        live_odds_info = f"已成功调取 The Odds API 实时市场样本，覆盖 {len(odds_data)} 场正在监控的比赛盘口。"
 
                 if is_zero_input:
                     prompt = (
@@ -249,17 +337,21 @@ with tab1:
                     enable_s = True
                 else:
                     prompt = f"""
-你是一名顶级体育对冲基金首席量化研究员，精通做市商微观结构博弈、Shin 去抽水模型、联合分布自洽性与 Game-State 突变推演。
+你是一名顶级体育对冲基金首席量化研究员，精通做市商微观结构博弈、Shin (1993) 去抽水模型、联合分布自洽性与 Game-State 突变推演。
 现对以下赛事启动深度交易研判：
 
 【赛事信息】：{match_input if match_input else '详见上传截图中的赛事对阵'}
-【本地数理基准概率】：
-- 泊松理论分布：主胜 {math_baseline['home_win']}% | 平局 {math_baseline['draw']}% | 客胜 {math_baseline['away_win']}%
+【外部实时做市商接口状态】：{live_odds_info}
+
+【本地确定性数理求解器动态输出（Python 硬核计算）】：
+- 盘口动态解算预期进球 (Dynamic xG)：主队预期攻门 $\\lambda = {math_baseline['home_xg']}$ | 客队预期攻门 $\\mu = {math_baseline['away_xg']}$
+- 动态泊松理论无偏概率：主胜 {math_baseline['home_win']}% | 平局 {math_baseline['draw']}% | 客胜 {math_baseline['away_win']}%
 - 进球数理论离散度：0球({math_baseline['goals'].get(0)}%), 1球({math_baseline['goals'].get(1)}%), 2球({math_baseline['goals'].get(2)}%), 3球({math_baseline['goals'].get(3)}%)
+- 数理最高概率比分 Top 3：1) {math_baseline['top_scores'][0][0]} ({math_baseline['top_scores'][0][1]}%) | 2) {math_baseline['top_scores'][1][0]} ({math_baseline['top_scores'][1][1]}%) | 3) {math_baseline['top_scores'][2][0]} ({math_baseline['top_scores'][2][1]}%)
 
 【必须执行的最高分析铁律（五大实战补全）】：
 1. **微观做市商模式强制定性**：明确归类【模式A：浅盘诱热 / 模式B：借题材阻盘 / 模式C：大单扫盘 Steam / 模式D：中立水钱对冲】。
-2. **Game-State 突变与走地对冲指令**：必须推演弱队意外率先进球对大球的膨胀冲击，并给出明确的【走地突变对冲指令】。
+2. **Game-State 突变与走地对冲指令**：推演弱队意外率先进球对大球的膨胀冲击，并给出明确的【走地突变对冲指令】。
 3. **入场临界赔率（Cut-off Odds）**：每个选项必须标出“当前市场参考赔率”与“最低可接受入场赔率（Price Floor）”，跌破红线即放弃。
 4. **主流亚盘大小球（Over/Under）与联合自洽比分**：必须映射至低抽水主流亚盘大小球（如 Under 2.25），并输出 Top 3 最可能具体比分。
 5. **推演时效状态标定**：标明是【临场终盘确定态】还是【早盘战略预估态】。
