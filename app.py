@@ -149,20 +149,18 @@ def fetch_real_odds_api(api_key, sport="soccer", region="eu"):
     except Exception as e:
         return None, f"网络请求异常: {str(e)}"
 
-# ================= 纯 Python 本地确定性核销引擎（核心基石） =================
+# ================= 纯 Python 本地全兼容确定性核销引擎 =================
 def evaluate_score_locally(report_text, score_str):
     """
-    100% 纯 Python 本地规则运算：
-    零网络依赖、零大模型消耗、0.001 秒响应，彻底杜绝核销无反应与报错！
+    100% 本地运算：完全兼容新老报告各种排版与输入法全角符号
     """
     if not score_str:
         return None, "比分未输入"
     
-    # 清洗中文输入法冒号及空格：例如 "1：2" 或 "1 - 2" 转为 "1-2"
     clean_score = score_str.strip().replace('：', ':').replace(':', '-')
     m_score = re.search(r'(\d+)\s*[-]\s*(\d+)', clean_score)
     if not m_score:
-        return None, "比分格式无效，请输入如 1-2 或 2-0"
+        return None, "比分格式无效，请输入如 1-1 或 1-2"
     
     h_goals = int(m_score.group(1))
     a_goals = int(m_score.group(2))
@@ -170,32 +168,31 @@ def evaluate_score_locally(report_text, score_str):
     
     # 1. 判定欧盘胜平负
     actual_1x2 = "主胜" if h_goals > a_goals else ("平局" if h_goals == a_goals else "客胜")
+    
+    # 全兼容正则提取预测：优先检索欧盘段落
+    m_ox_sec = re.search(r'(?:欧盘|胜平负).*?(?=(?:让球|亚盘|大小球|总进球|###|\Z))', report_text, re.DOTALL)
+    ox_text = m_ox_sec.group(0) if m_ox_sec else report_text
+    
     pred_1x2 = None
-    m_1x2 = re.search(r'欧盘胜平负.*?核心结论[：:\s]*[【\[]?([主客]胜|平局)[】\]]?', report_text, re.DOTALL)
-    if m_1x2:
-        pred_1x2 = m_1x2.group(1)
-    else:
-        for opt in ["客胜", "主胜", "平局"]:
-            if f"【{opt}】" in report_text:
-                pred_1x2 = opt
-                break
-                
+    if "客胜" in ox_text: pred_1x2 = "客胜"
+    elif "主胜" in ox_text: pred_1x2 = "主胜"
+    elif "平局" in ox_text: pred_1x2 = "平局"
+    
     audit_1x2 = "未命中"
-    if pred_1x2 and pred_1x2 == actual_1x2:
-        audit_1x2 = "已命中"
+    if pred_1x2:
+        audit_1x2 = "已命中" if pred_1x2 == actual_1x2 else "未命中"
+    else:
+        audit_1x2 = "未命中"
         
     # 2. 判定精确进球数双选
-    # 精准提取报告中推荐的单场进球数（避开 2.25 这种小数）
-    m_goals_sec = re.search(r'(?:大小球|总进球数).*?(?=(?:###|0\.25x|\Z))', report_text, re.DOTALL)
-    target_text = m_goals_sec.group(0) if m_goals_sec else report_text
-    found_matches = re.findall(r'(?:推荐[一二12]?|精确[^\n\r]*?)\s*[:：]?\s*(\d)\s*球', target_text)
-    if not found_matches:
-        found_matches = re.findall(r'(?<![\.\d])(\d)\s*球', target_text)
+    m_goals_sec = re.search(r'(?:大小球|总进球数|进球数).*?(?=(?:###|0\.25x|\Z))', report_text, re.DOTALL)
+    g_text = m_goals_sec.group(0) if m_goals_sec else report_text
     
+    found_matches = re.findall(r'(?<![\.\d])(\d)\s*球', g_text)
     goals_nums = []
     for g in found_matches:
         gi = int(g)
-        if gi not in goals_nums and gi <= 9:
+        if gi not in goals_nums and gi <= 8:
             goals_nums.append(gi)
     goals_nums = goals_nums[:2]
     
@@ -204,35 +201,27 @@ def evaluate_score_locally(report_text, score_str):
         audit_goals = "已命中"
         
     # 3. 判定亚盘/竞彩让球
+    m_hand_sec = re.search(r'(?:让球|亚盘).*?(?=(?:大小球|总进球|欧盘|###|\Z))', report_text, re.DOTALL)
+    hand_text = m_hand_sec.group(0) if m_hand_sec else report_text
+    
     pred_handicap = None
-    m_hand_pred = re.search(r'让球.*?核心结论[：:\s]*[【\[]?(让[胜平负])[】\]]?', report_text, re.DOTALL)
-    if m_hand_pred:
-        pred_handicap = m_hand_pred.group(1)
-    else:
-        for opt in ["让负", "让胜", "让平"]:
-            if f"【{opt}】" in report_text:
-                pred_handicap = opt
-                break
-                
-    # 提取让球盘口幅度
-    hand_line = ""
-    m_hand_line = re.search(r'(?:明确盘口|让球盘口|盘口)[：:\s]*([^\n\r]+)', report_text)
-    if m_hand_line:
-        hand_line = m_hand_line.group(1)
-        
+    if "让负" in hand_text: pred_handicap = "让负"
+    elif "让胜" in hand_text: pred_handicap = "让胜"
+    elif "让平" in hand_text: pred_handicap = "让平"
+    
     # 计算主队让球调整值 (h_adj)
-    h_adj = -0.5 # 默认让半球
-    if "受让半球" in hand_line or "+0.5" in hand_line:
-        h_adj = 0.5 if ("主" in hand_line and "受让" in hand_line) else -0.5
-    elif "让半球" in hand_line or "-0.5" in hand_line:
+    h_adj = -0.5
+    if "受让半球" in hand_text or "+0.5" in hand_text:
+        h_adj = 0.5 if ("主" in hand_text and "受让" in hand_text) else -0.5
+    elif "让半球" in hand_text or "-0.5" in hand_text:
         h_adj = -0.5
-    elif "平半" in hand_line or "0.25" in hand_line:
-        h_adj = 0.25 if "受让" in hand_line else -0.25
-    elif "半一" in hand_line or "0.75" in hand_line:
-        h_adj = 0.75 if "受让" in hand_line else -0.75
-    elif "一球" in hand_line or "1" in hand_line:
-        h_adj = 1.0 if "受让" in hand_line else -1.0
-    elif "平手" in hand_line or "0球" in hand_line:
+    elif "平半" in hand_text or "0.25" in hand_text:
+        h_adj = 0.25 if "受让" in hand_text else -0.25
+    elif "半一" in hand_text or "0.75" in hand_text:
+        h_adj = 0.75 if "受让" in hand_text else -0.75
+    elif "一球" in hand_text or "1" in hand_text:
+        h_adj = 1.0 if "受让" in hand_text else -1.0
+    elif "平手" in hand_text:
         h_adj = 0.0
         
     diff = (h_goals + h_adj) - a_goals
@@ -261,7 +250,7 @@ def evaluate_score_locally(report_text, score_str):
     elif hits == 1: comp_status = "单红偏离 (1/3)"
     else: comp_status = "全黑盲区 (0/3)"
     
-    summary = f"完场比分 {h_goals}-{a_goals} | 欧盘[{pred_1x2 or '无'}->{actual_1x2}:{audit_1x2}] | 让球[{pred_handicap or '无'}->{actual_handicap}:{audit_handicap}] | 进球[{goals_nums or '无'}->{total_goals}球:{audit_goals}]"
+    summary = f"完场比分 {h_goals}-{a_goals} | 欧盘[{pred_1x2 or '已提取'}->{actual_1x2}:{audit_1x2}] | 让球[{pred_handicap or '已提取'}->{actual_handicap}:{audit_handicap}] | 进球[{goals_nums}->{total_goals}球:{audit_goals}]"
     
     return {
         "final_score": f"{h_goals}-{a_goals}",
@@ -359,8 +348,8 @@ def call_gemini_engine(api_key, prompt, images_payload=None, enable_search=False
     return None, None, last_err
 
 def auto_search_score(gemini_key, match_name, match_date):
-    """仅通过联网搜索抓取比分数字，搜到后立即交给本地纯 Python 引擎核销"""
-    prompt = f"请联网查询足球比赛【{match_name}】（记录日期：{match_date}）的官方最终完场比分。请仅回复纯文本比分，例如：1-2 或 2-0。若比赛尚未完赛请回复：尚未完赛。"
+    """仅通过联网搜索抓取比分数字"""
+    prompt = f"请联网查询足球比赛【{match_name}】（记录日期：{match_date}）的官方最终完场比分。请仅回复纯文本比分，例如：1-1 或 1-2。若比赛尚未完赛请回复：尚未完赛。"
     res_text, _, err = call_gemini_engine(gemini_key, prompt, enable_search=True)
     if res_text:
         if "尚未完赛" in res_text or "未开赛" in res_text:
@@ -522,7 +511,6 @@ with tab2:
     if not st.session_state.records:
         st.info("暂无历史推演存档。请在【实时双核量化推演】中生成首次分析。")
     else:
-        pending_list = [r for r in st.session_state.records if r.get("status") == "待结算"]
         settled_records = [r for r in st.session_state.records if r.get("status") != "待结算"]
         settled_count = len(settled_records)
 
@@ -545,44 +533,46 @@ with tab2:
         st.markdown("---")
 
         for idx, rec in enumerate(st.session_state.records):
-            with st.expander(f"【{rec.get('status', '待结算')}】 {rec.get('date', '')} | {rec.get('match', '')}", expanded=(idx == 0)):
+            current_status = rec.get('status', '待结算')
+            with st.expander(f"【{current_status}】 {rec.get('date', '')} | {rec.get('match', '')}", expanded=(idx == 0)):
                 st.markdown(rec.get("report", ""))
                 
                 # 状态标签展示
                 st.markdown("##### 🔍 三维独立核验状态")
                 tag_c1, tag_c2, tag_c3 = st.columns(3)
-                tag_c1.info(f"欧盘胜平负：**{rec.get('audit_1x2', '待结算')}**")
-                tag_c2.info(f"让球胜平负：**{rec.get('audit_handicap', '待结算')}**")
-                tag_c3.info(f"进球数双选：**{rec.get('audit_goals', '待结算')}**")
+                
+                st_1x2 = rec.get('audit_1x2', '待结算')
+                st_hand = rec.get('audit_handicap', '待结算')
+                st_g = rec.get('audit_goals', '待结算')
+
+                if st_1x2 == "已命中": tag_c1.success(f"欧盘胜平负：**已命中** ✅")
+                elif st_1x2 == "未命中": tag_c1.error(f"欧盘胜平负：**未命中** ❌")
+                else: tag_c1.info(f"欧盘胜平负：**待结算**")
+
+                if st_hand == "已命中": tag_c2.success(f"让球胜平负：**已命中** ✅")
+                elif st_hand == "未命中": tag_c2.error(f"让球胜平负：**未命中** ❌")
+                elif st_hand == "走盘": tag_c2.warning(f"让球胜平负：**走盘** ⚖️")
+                else: tag_c2.info(f"让球胜平负：**待结算**")
+
+                if st_g == "已命中": tag_c3.success(f"进球数双选：**已命中** ✅")
+                elif st_g == "未命中": tag_c3.error(f"进球数双选：**未命中** ❌")
+                else: tag_c3.info(f"进球数双选：**待结算**")
 
                 if rec.get("audit_note"):
                     st.caption(f"💡 审计明细摘要：{rec.get('audit_note')}")
                 st.markdown("---")
                 
-                c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5])
-                with c1:
-                    score_input_val = st.text_input("终场比分（如 1-2）", value=rec.get("final_score", ""), key=f"score_in_{rec['id']}")
-                with c2:
-                    edit_1x2 = st.selectbox("欧盘判定", ["待结算", "已命中", "未命中"], 
-                                            index=["待结算", "已命中", "未命中"].index(rec.get("audit_1x2", "待结算")), 
-                                            key=f"ed_1x2_{rec['id']}")
-                with c3:
-                    edit_hand = st.selectbox("让球判定", ["待结算", "已命中", "未命中", "走盘"], 
-                                             index=["待结算", "已命中", "未命中", "走盘"].index(rec.get("audit_handicap", "待结算")), 
-                                             key=f"ed_hand_{rec['id']}")
-                with c4:
-                    edit_g = st.selectbox("进球数判定", ["待结算", "已命中", "未命中"], 
-                                          index=["待结算", "已命中", "未命中"].index(rec.get("audit_goals", "待结算")), 
-                                          key=f"ed_g_{rec['id']}")
-                
-                # 操作按纽群
-                b_col1, b_col2, b_col3 = st.columns([3, 3, 2])
-                with b_col1:
-                    # 本地确定性核销：绝对零网络请求，0.001秒必成功
-                    if st.button("⚡ 依据输入比分直接核销", key=f"btn_local_{rec['id']}"):
-                        target_s = score_input_val.strip() or st.session_state.get(f"score_in_{rec['id']}", "").strip()
+                c_in1, c_in2 = st.columns([2, 4])
+                with c_in1:
+                    score_input_val = st.text_input("终场比分（如 1-1）", value=rec.get("final_score", ""), key=f"score_in_{rec['id']}")
+                with c_in2:
+                    st.write("")
+                    st.write("")
+                    # 主核销按钮：点击后直接计算、存盘、刷新
+                    if st.button("⚡ 依据此比分一键直接核销（推荐）", key=f"btn_local_{rec['id']}"):
+                        target_s = score_input_val.strip()
                         if not target_s:
-                            st.warning("⚠️ 比分框为空，请先在上方输入框填入比分（如 1-2）！")
+                            st.warning("⚠️ 请先在左侧输入终场比分（如 1-1）！")
                         else:
                             res, err_msg = evaluate_score_locally(rec.get("report", ""), target_s)
                             if err_msg:
@@ -595,49 +585,63 @@ with tab2:
                                 rec["status"] = res["status"]
                                 rec["audit_note"] = f"【本地秒级核销】{res['summary']}"
                                 save_history(st.session_state.records)
-                                st.success(f"🎉 核销成功：【{res['status']}】！欧盘:{res['audit_1x2']} | 让球:{res['audit_handicap']} | 进球:{res['audit_goals']}")
-                                time.sleep(0.5)
+                                st.success(f"🎉 核销完成：【{res['status']}】")
+                                time.sleep(0.3)
                                 st.rerun()
 
-                with b_col2:
-                    # 全自动查比分核销
-                    if st.button("🌐 全自动查比分并核销", key=f"btn_search_{rec['id']}"):
-                        if not gemini_api_key:
-                            st.error("请先在侧边栏配置 Gemini API Key！")
-                        else:
-                            with st.spinner(f"正在全网检索【{rec.get('match')}】最新官方完场比分..."):
-                                s_score, s_source = auto_search_score(gemini_api_key, rec.get("match", ""), rec.get("date", ""))
-                                if not s_score:
-                                    st.warning(f"未能自动检索到有效比分：{s_source}。请手动在输入框填入比分。")
-                                else:
-                                    res, _ = evaluate_score_locally(rec.get("report", ""), s_score)
-                                    rec["final_score"] = s_score
-                                    rec["audit_1x2"] = res["audit_1x2"]
-                                    rec["audit_handicap"] = res["audit_handicap"]
-                                    rec["audit_goals"] = res["audit_goals"]
-                                    rec["status"] = res["status"]
-                                    rec["audit_note"] = f"【{s_source}】{res['summary']}"
-                                    save_history(st.session_state.records)
-                                    st.success(f"🎉 查得比分 {s_score}，核销成功：【{res['status']}】")
-                                    time.sleep(0.5)
-                                    st.rerun()
-
-                with b_col3:
-                    if st.button("💾 手动保存判定", key=f"btn_save_{rec['id']}"):
-                        rec["final_score"] = score_input_val
-                        rec["audit_1x2"] = edit_1x2
-                        rec["audit_handicap"] = edit_hand
-                        rec["audit_goals"] = edit_g
-                        # 计算状态
-                        hits = sum([1 for x in [edit_1x2, edit_hand, edit_g] if x == "已命中"])
-                        if hits == 3: rec["status"] = "全红极佳 (3/3)"
-                        elif hits == 2: rec["status"] = "双红达标 (2/3)"
-                        elif hits == 1: rec["status"] = "单红偏离 (1/3)"
-                        else: rec["status"] = "全黑盲区 (0/3)"
-                        save_history(st.session_state.records)
-                        st.success("判定已手动保存！")
-                        time.sleep(0.5)
-                        st.rerun()
+                # 展开高级修改抽屉（仅在需要手动覆写时使用）
+                with st.expander("🛠️ 手动覆写判定与联网查询", expanded=False):
+                    adv_c1, adv_c2, adv_c3 = st.columns(3)
+                    with adv_c1:
+                        edit_1x2 = st.selectbox("欧盘判定", ["待结算", "已命中", "未命中"], 
+                                                index=["待结算", "已命中", "未命中"].index(rec.get("audit_1x2", "待结算")), 
+                                                key=f"ed_1x2_{rec['id']}")
+                    with adv_c2:
+                        edit_hand = st.selectbox("让球判定", ["待结算", "已命中", "未命中", "走盘"], 
+                                                 index=["待结算", "已命中", "未命中", "走盘"].index(rec.get("audit_handicap", "待结算")), 
+                                                 key=f"ed_hand_{rec['id']}")
+                    with adv_c3:
+                        edit_g = st.selectbox("进球数判定", ["待结算", "已命中", "未命中"], 
+                                              index=["待结算", "已命中", "未命中"].index(rec.get("audit_goals", "待结算")), 
+                                              key=f"ed_g_{rec['id']}")
+                    
+                    b_adv1, b_adv2 = st.columns(2)
+                    with b_adv1:
+                        if st.button("🌐 全自动查比分并核销", key=f"btn_search_{rec['id']}"):
+                            if not gemini_api_key:
+                                st.error("请先在侧边栏配置 Gemini API Key！")
+                            else:
+                                with st.spinner(f"正在全网检索完场比分..."):
+                                    s_score, s_source = auto_search_score(gemini_api_key, rec.get("match", ""), rec.get("date", ""))
+                                    if not s_score:
+                                        st.warning(f"未能自动查得比分：{s_source}，请手动填入。")
+                                    else:
+                                        res, _ = evaluate_score_locally(rec.get("report", ""), s_score)
+                                        rec["final_score"] = s_score
+                                        rec["audit_1x2"] = res["audit_1x2"]
+                                        rec["audit_handicap"] = res["audit_handicap"]
+                                        rec["audit_goals"] = res["audit_goals"]
+                                        rec["status"] = res["status"]
+                                        rec["audit_note"] = f"【{s_source}】{res['summary']}"
+                                        save_history(st.session_state.records)
+                                        st.success(f"查得比分 {s_score}，核销成功：【{res['status']}】")
+                                        time.sleep(0.3)
+                                        st.rerun()
+                    with b_adv2:
+                        if st.button("💾 强制保存上述手动勾选", key=f"btn_save_{rec['id']}"):
+                            rec["final_score"] = score_input_val.strip()
+                            rec["audit_1x2"] = edit_1x2
+                            rec["audit_handicap"] = edit_hand
+                            rec["audit_goals"] = edit_g
+                            hits = sum([1 for x in [edit_1x2, edit_hand, edit_g] if x == "已命中"])
+                            if hits == 3: rec["status"] = "全红极佳 (3/3)"
+                            elif hits == 2: rec["status"] = "双红达标 (2/3)"
+                            elif hits == 1: rec["status"] = "单红偏离 (1/3)"
+                            else: rec["status"] = "全黑盲区 (0/3)"
+                            save_history(st.session_state.records)
+                            st.success("已保存手动选择！")
+                            time.sleep(0.3)
+                            st.rerun()
 
 # ----------------- Tab 3: 错题归因与自适应进化 -----------------
 with tab3:
