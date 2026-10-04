@@ -43,18 +43,27 @@ st.markdown("""
     .metric-item { flex: 1; text-align: center; }
     .metric-title { font-size: 0.72rem; color: #6c757d; margin-bottom: 2px; }
     .metric-num { font-size: 1.15rem; font-weight: 700; color: #212529; }
+    .probe-card {
+        background-color: #f1f8ff;
+        border: 1px solid #c8e1ff;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 15px;
+        font-size: 0.85rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. 密钥深度提取与清洗（兼容所有老版配置）
+# 2. 密钥深度提取与严格清洗引擎
 # ==============================================================================
 def clean_str(val):
     if not val:
         return ""
     s = str(val).strip()
-    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
-        s = s[1:-1].strip()
+    # 彻底去除可能误带的引号、括号、多余逗号及空白
+    for _ in range(2):
+        s = s.strip().strip('"').strip("'").strip(',').strip(';').strip()
     return s
 
 def get_secret(keys, default=""):
@@ -80,7 +89,7 @@ JSONBIN_HEADERS = {
 }
 
 # ==============================================================================
-# 3. 云端持久化存储中心（完全对齐云端历史字段）
+# 3. 云端持久化存储中心
 # ==============================================================================
 def fetch_from_cloud():
     default_db = {
@@ -118,14 +127,13 @@ def push_to_cloud(data):
     try:
         resp = requests.put(JSONBIN_URL, json=data, headers=JSONBIN_HEADERS, timeout=8)
         return resp.status_code == 200
-    except Exception as e:
+    except Exception:
         return False
 
 if "db" not in st.session_state:
     ok, msg, loaded_db = fetch_from_cloud()
     st.session_state.db = loaded_db
 
-# 手机端轻量压缩（避免多张超清图卡死）
 def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -144,32 +152,9 @@ def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     buffered.seek(0)
     return Image.open(buffered)
 
-# ==============================================================================
-# 4. 侧边栏监控与快捷诊断
-# ==============================================================================
-with st.sidebar:
-    st.subheader("⚙️ 核心接口中枢")
-    st.caption("🟢 云端数据库：已连接" if IS_CLOUD_READY else "🔴 数据库密钥未配置")
-    
-    sidebar_gemini_key = st.text_input("Gemini API Key (实时覆写)", value=GEMINI_API_KEY, type="password")
-    if sidebar_gemini_key:
-        GEMINI_API_KEY = clean_str(sidebar_gemini_key)
-
-    if st.button("⚡ 诊断 Gemini 3.8 引擎有效性", use_container_width=True):
-        if not GEMINI_API_KEY:
-            st.error("当前未检测到密钥！")
-        else:
-            try:
-                genai.configure(api_key=GEMINI_API_KEY)
-                t_model = genai.GenerativeModel("gemini-3.8-flash")
-                t_res = t_model.generate_content("Ping")
-                st.success("🟢 验证成功！Gemini 3.8 Flash 引擎通信完美！")
-            except Exception as e:
-                st.error(f"🔴 3.8 验证提示: {str(e)}")
-
-# ==============================================================================
-# 5. 主看板数据概览
-# ==============================================================================
+# ==========================================
+# 4. 主看板数据概览
+# ==========================================
 st.markdown("### ⚽ 足球微观量化做市决策系统")
 
 hist = st.session_state.db.get("history", [])
@@ -209,10 +194,49 @@ if st.button("🔄 立即从云端强制拉取最新数据（多设备同步）"
 
 tab1, tab2, tab3 = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘"])
 
-# ==============================================================================
-# Tab 1: 推演录入（基于 3.8 引擎·全自动视觉识别）
-# ==============================================================================
+# ==========================================
+# Tab 1: 推演录入（自带密钥透视探针与一键测活）
+# ==========================================
 with tab1:
+    # 密钥实时透视与诊断探针
+    with st.expander("🔑 密钥实时透视与一键测活中枢（可随时查看/临时覆盖）", expanded=(not bool(GEMINI_API_KEY))):
+        manual_key = st.text_input("临时粘贴/测试新 Key（留空则默认读 Secrets）", type="password")
+        eval_key = clean_str(manual_key) if manual_key else GEMINI_API_KEY
+
+        if eval_key:
+            masked = f"{eval_key[:6]}...{eval_key[-4:]}" if len(eval_key) >= 10 else eval_key
+            st.markdown(f"**当前生效 Key 状态**：`{masked}` | **总长度**：`{len(eval_key)}` 位")
+            if not eval_key.startswith("AIza"):
+                st.warning("⚠️ 警告：有效密钥通常必须以 `AIza` 开头！请确认未复制成项目 ID 或其他文本。")
+        else:
+            st.error("⚠️ 当前系统未检测到任何 Gemini API Key！")
+
+        if st.button("⚡ 1秒测试该密钥真实连通性 (无需传图)", use_container_width=True):
+            if not eval_key:
+                st.error("请先填入或配置密钥！")
+            else:
+                with st.spinner("正在直连 Google 服务器测试握手..."):
+                    try:
+                        genai.configure(api_key=eval_key)
+                        # 优先尝试 3.8，若受限自动适配
+                        success_m = None
+                        last_err = ""
+                        for m_name in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+                            try:
+                                m = genai.GenerativeModel(m_name)
+                                r = m.generate_content("Ping")
+                                success_m = m_name
+                                break
+                            except Exception as sub_e:
+                                last_err = str(sub_e)
+
+                        if success_m:
+                            st.success(f"🟢 握手完美通过！密钥有效，成功调用【{success_m}】引擎！")
+                        else:
+                            st.error(f"🔴 Google API 拦截详情:\n{last_err}")
+                    except Exception as e:
+                        st.error(f"🔴 客户端配置异常: {str(e)}")
+
     st.info("📌 **免打字极速模式**：直接上传截图，对阵、竞彩让球数(-1/0/+1)、大小球基线均由 AI 视觉自动提取。")
 
     with st.form("deduction_form", clear_on_submit=False):
@@ -239,22 +263,21 @@ with tab1:
         ]
         selected_anomalies = st.multiselect("做市商异动特征（多选，无则不选）", anomaly_options)
 
-        with st.expander("⚙️ 盘口基准与临时配置（选填，默认全自动看图提取）"):
+        with st.expander("⚙️ 盘口基准高级手动覆盖（选填，默认全自动识图）"):
             override_handicap = st.selectbox("强制指定让球数", ["【自动看图识别】", "0 (常规胜平负)", "-1 (主让一球)", "+1 (主受让一球)", "-2", "+2"])
             override_goals = st.selectbox("强制指定进球基线", ["【自动看图识别】", "2.00", "2.25", "2.50", "2.75", "3.00", "3.25", "3.50"])
-            temp_key_input = st.text_input("临时填入/替换 Gemini Key（留空则默认读 Secrets）", type="password")
 
         start_btn = st.form_submit_button("⚡ 启动双核量化做市推演", type="primary", use_container_width=True)
 
     if start_btn:
-        active_key = clean_str(temp_key_input) if temp_key_input else GEMINI_API_KEY
+        active_key = clean_str(manual_key) if manual_key else GEMINI_API_KEY
         
         if not uploaded_files:
             st.error("请至少上传一张截图（指数对比图或阵容伤停图）！")
         elif not active_key:
-            st.error("未检测到有效 Gemini API Key！请展开上方折叠栏填入，或在 Secrets 中配置。")
+            st.error("未检测到有效 Gemini API Key！请展开上方【密钥透视】中枢粘贴，或在 Secrets 中配置。")
         else:
-            with st.spinner("Gemini 3.8 首席做市商正在看图识人、解析盘口、计算纯概率并推演自洽比分..."):
+            with st.spinner("AI 首席做市商正在看图识人、解析盘口、计算纯概率并推演自洽比分..."):
                 try:
                     processed_imgs = [compress_image_for_mobile(f) for f in uploaded_files]
                     rules_str = "\n".join(st.session_state.db.get("rules", []))
@@ -315,17 +338,25 @@ with tab1:
                     )
 
                     genai.configure(api_key=active_key)
-                    # 优先调用 3.8 旗舰模型；若环境不支持则无缝降级 1.5 确保必出结果
-                    try:
-                        model = genai.GenerativeModel("gemini-3.8-flash")
-                        response = model.generate_content([system_prompt, user_prompt] + processed_imgs)
-                    except Exception:
-                        model = genai.GenerativeModel("gemini-1.5-flash")
-                        response = model.generate_content([system_prompt, user_prompt] + processed_imgs)
+                    
+                    # 动态智能路由，先试 3.8，不可用自动降级
+                    response = None
+                    for m_cand in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+                        try:
+                            mdl = genai.GenerativeModel(m_cand)
+                            response = mdl.generate_content([system_prompt, user_prompt] + processed_imgs)
+                            if response:
+                                break
+                        except Exception:
+                            continue
+
+                    if not response:
+                        # 若全部捕获失败，发起一次直接调用抛出明确异常供定位
+                        mdl = genai.GenerativeModel("gemini-1.5-flash")
+                        response = mdl.generate_content([system_prompt, user_prompt] + processed_imgs)
 
                     report_text = response.text
 
-                    # 解析结构化 JSON 载荷
                     json_match = re.search(r'```json\s*(\{.*?\})\s*```', report_text, re.DOTALL)
                     if json_match:
                         parsed_json = json.loads(json_match.group(1))
@@ -351,7 +382,6 @@ with tab1:
                     elif "+1" in override_handicap:
                         parsed_json["detected_handicap"] = 1
 
-                    # 存入历史数据库
                     new_rec = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -376,9 +406,9 @@ with tab1:
                 except Exception as e:
                     st.error(f"推演执行失败: {str(e)}")
 
-# ==============================================================================
+# ==========================================
 # Tab 2: 结算审计（0 人工比分全自动裁判）
-# ==============================================================================
+# ==========================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
     records = st.session_state.db.get("history", [])
@@ -411,7 +441,6 @@ with tab2:
                         tot_goals = in_h + in_a
                         act_score = f"{in_h}-{in_a}"
 
-                        # 竞彩官方让球判定
                         if h_line == 0:
                             act_h = "胜" if diff > 0 else ("平" if diff == 0 else "负")
                         else:
@@ -436,7 +465,7 @@ with tab2:
                             })
 
                         push_to_cloud(st.session_state.db)
-                        st.success(f"结算完成！打出【{act_h}】({'🟢红单' if is_win else '🔴黑单'})，总进球 {tot_goals} 球")
+                        st.success(f"结算完成！打出【{act_h}】({'🟢红单' if is_win else '🔴黑单'}), 总进球 {tot_goals} 球")
                         st.rerun()
                 else:
                     st.caption(f"🏁 完场比分：{rec.get('actual_score')} | 结算状态：{tag}")
@@ -445,9 +474,9 @@ with tab2:
                         push_to_cloud(st.session_state.db)
                         st.rerun()
 
-# ==============================================================================
+# ==========================================
 # Tab 3: 错题复盘与自进化避坑库
-# ==============================================================================
+# ==========================================
 with tab3:
     st.markdown("**🧠 错题复盘与自进化避坑库**")
 
@@ -456,31 +485,36 @@ with tab3:
 
     if len(err_list) >= 3:
         if st.button("⚡ 启动黑单负样本 AI 聚类反思（提炼新军规）", type="primary", use_container_width=True):
-            active_key = clean_str(sidebar_gemini_key) if sidebar_gemini_key else GEMINI_API_KEY
+            active_key = clean_str(manual_key) if manual_key else GEMINI_API_KEY
             if not active_key:
                 st.error("请先配置 Gemini API Key！")
             else:
                 with st.spinner("AI 正在深度反思近期负样本共性并提炼避坑军规..."):
                     try:
                         genai.configure(api_key=active_key)
-                        try:
-                            model = genai.GenerativeModel("gemini-3.8-flash")
-                        except Exception:
-                            model = genai.GenerativeModel("gemini-1.5-flash")
-                        
-                        prompt = f"""
+                        res = None
+                        for m_cand in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+                            try:
+                                m = genai.GenerativeModel(m_cand)
+                                prompt = f"""
 你作为顶级量化做市风控总监，审查以下近期竞彩失误样本：
 {json.dumps(err_list[-8:], ensure_ascii=False, indent=2)}
 
 请深度剖析这几场失误的做市商盘口与水位共性陷阱，提炼【1 条浓缩精准的黄金量化避坑军规】。
 要求：字数在 50 字以内，以“【量化避坑】”开头，直接输出军规内容。
 """
-                        res = model.generate_content(prompt)
-                        new_rule = res.text.strip().replace("\n", "")
-                        st.session_state.db.setdefault("rules", []).append(new_rule)
-                        push_to_cloud(st.session_state.db)
-                        st.success(f"🎉 新军规已提炼并入库：\n\n{new_rule}")
-                        st.rerun()
+                                res = m.generate_content(prompt)
+                                if res:
+                                    break
+                            except Exception:
+                                continue
+
+                        if res:
+                            new_rule = res.text.strip().replace("\n", "")
+                            st.session_state.db.setdefault("rules", []).append(new_rule)
+                            push_to_cloud(st.session_state.db)
+                            st.success(f"🎉 新军规已提炼并入库：\n\n{new_rule}")
+                            st.rerun()
                     except Exception as e:
                         st.error(f"提炼失败: {e}")
 
