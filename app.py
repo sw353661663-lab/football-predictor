@@ -63,7 +63,7 @@ FULL_8_RULES = [
 ]
 
 # ==============================================================================
-# 3. 密钥深度提取与清洗（兼容所有老版配置）
+# 3. 密钥深度提取与严格清洗（兼容所有老版配置）
 # ==============================================================================
 def clean_str(val):
     if not val:
@@ -136,7 +136,7 @@ if "db" not in st.session_state:
     ok, msg, loaded_db = fetch_from_cloud()
     st.session_state.db = loaded_db
 
-# 手机端轻量压缩（避免多张超清大图上传卡死）
+# 手机端轻量压缩（避免多张超清大图上传导致网络超时或前端卡死）
 def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -243,7 +243,7 @@ with tab1:
         with col_m1:
             match_input = st.text_input("⚽ 目标对阵/联赛（选填，留空则自动识图）", placeholder="如: 曼联 vs 切尔西")
         with col_m2:
-            weather_opt = st.selectbox("⛅ 天气与场地状况", ["🌤 晴朗 / 场地优良", "🌧️ 小雨 / 场地湿滑", "⛈️ 暴雨 / 严重积水", "❄️ 严寒 / 冰冻降雪", "🌪️ 大风 / 高空球受阻"])
+            weather_opt = st.selectbox("⛅ 天气与场地状况", ["🌤 晴朗 / 场地优良", "🌧️ 小雨 / 场地湿滑", "⛈️ 暴雨 / 严重积水", "❄ 严寒 / 冰冻降雪", "🌪️ 大风 / 高空球受阻"])
 
         anomaly_options = [
             "【正向洗盘】临场升盘降水·实力强阻",
@@ -398,7 +398,7 @@ with tab1:
                     st.error(f"推演执行失败: {str(e)}")
 
 # ==============================================================================
-# Tab 2: 结算审计（0 人工比分全自动裁判）
+# Tab 2: 结算审计（待结算/已结算均配备一键删除按钮）
 # ==============================================================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
@@ -420,6 +420,7 @@ with tab2:
                 - **自洽比分**：首选 `{dec.get('first_score', 'N/A')}` | 防冷 `{dec.get('second_score', 'N/A')}`
                 """)
 
+                # 【未结算卡片】
                 if not rec.get("settled", False):
                     c_s1, c_s2 = st.columns(2)
                     with c_s1:
@@ -427,7 +428,13 @@ with tab2:
                     with c_s2:
                         in_a = st.number_input("客队进球", min_value=0, max_value=20, value=0, key=f"a_{rec['id']}")
 
-                    if st.button("⚡ 一键自动核算", key=f"btn_{rec['id']}", type="primary"):
+                    col_op1, col_op2 = st.columns([3, 1])
+                    with col_op1:
+                        settle_btn = st.button("⚡ 一键自动核算", key=f"btn_{rec['id']}", type="primary", use_container_width=True)
+                    with col_op2:
+                        del_pending_btn = st.button("🗑️ 删除该场", key=f"del_p_{rec['id']}", use_container_width=True)
+
+                    if settle_btn:
                         diff = in_h - in_a
                         tot_goals = in_h + in_a
                         act_score = f"{in_h}-{in_a}"
@@ -458,6 +465,14 @@ with tab2:
                         push_to_cloud(st.session_state.db)
                         st.success(f"结算完成！打出【{act_h}】({'🟢红单' if is_win else '🔴黑单'}), 总进球 {tot_goals} 球")
                         st.rerun()
+
+                    if del_pending_btn:
+                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x["id"] != rec["id"]]
+                        push_to_cloud(st.session_state.db)
+                        st.success("✅ 待结算记录已删除！")
+                        st.rerun()
+
+                # 【已结算卡片】
                 else:
                     st.caption(f"🏁 完场比分：{rec.get('actual_score')} | 结算状态：{tag}")
                     if st.button("🗑️ 删除该记录", key=f"del_{rec['id']}"):
@@ -466,7 +481,7 @@ with tab2:
                         st.rerun()
 
 # ==============================================================================
-# Tab 3: 错题复盘与自进化避坑库（包含一键补齐 8 大军规）
+# Tab 3: 错题复盘与自进化避坑库（包含一键补齐 8 大军规与规则独立删除）
 # ==============================================================================
 with tab3:
     st.markdown("**🧠 错题复盘与自进化避坑库**")
