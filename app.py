@@ -8,7 +8,7 @@ import requests
 from datetime import datetime
 
 # ==============================================================================
-# 1. 移动端优先视口渲染
+# 1. 移动端优先视口渲染与流式 CSS 增强
 # ==============================================================================
 st.set_page_config(
     page_title="OmniQuant Cortex · 足球微观量化做市决策系统",
@@ -19,9 +19,10 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* 彻底解决手机端顶部文字被顶栏/状态栏遮挡的问题 */
     .block-container {
-        padding-top: 1.2rem !important;
-        padding-bottom: 3rem !important;
+        padding-top: 4.2rem !important;
+        padding-bottom: 3.5rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
         max-width: 100% !important;
@@ -39,29 +40,21 @@ st.markdown("""
         border-radius: 10px;
         padding: 10px 8px;
         margin-bottom: 12px;
+        margin-top: 6px;
     }
     .metric-item { flex: 1; text-align: center; }
     .metric-title { font-size: 0.72rem; color: #6c757d; margin-bottom: 2px; }
     .metric-num { font-size: 1.15rem; font-weight: 700; color: #212529; }
-    .probe-card {
-        background-color: #f1f8ff;
-        border: 1px solid #c8e1ff;
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 15px;
-        font-size: 0.85rem;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. 密钥深度提取与严格清洗引擎
+# 2. 密钥深度提取与清洗（兼容所有老版配置）
 # ==============================================================================
 def clean_str(val):
     if not val:
         return ""
     s = str(val).strip()
-    # 彻底去除可能误带的引号、括号、多余逗号及空白
     for _ in range(2):
         s = s.strip().strip('"').strip("'").strip(',').strip(';').strip()
     return s
@@ -89,7 +82,7 @@ JSONBIN_HEADERS = {
 }
 
 # ==============================================================================
-# 3. 云端持久化存储中心
+# 3. 云端持久化存储中心（与现有历史数据 100% 结构兼容）
 # ==============================================================================
 def fetch_from_cloud():
     default_db = {
@@ -134,6 +127,7 @@ if "db" not in st.session_state:
     ok, msg, loaded_db = fetch_from_cloud()
     st.session_state.db = loaded_db
 
+# 手机端轻量压缩，防大图卡死
 def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -152,9 +146,9 @@ def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     buffered.seek(0)
     return Image.open(buffered)
 
-# ==========================================
+# ==============================================================================
 # 4. 主看板数据概览
-# ==========================================
+# ==============================================================================
 st.markdown("### ⚽ 足球微观量化做市决策系统")
 
 hist = st.session_state.db.get("history", [])
@@ -194,48 +188,38 @@ if st.button("🔄 立即从云端强制拉取最新数据（多设备同步）"
 
 tab1, tab2, tab3 = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘"])
 
-# ==========================================
-# Tab 1: 推演录入（自带密钥透视探针与一键测活）
-# ==========================================
+# ==============================================================================
+# Tab 1: 推演录入（基于 3.8 引擎·全自动视觉识别）
+# ==============================================================================
 with tab1:
-    # 密钥实时透视与诊断探针
-    with st.expander("🔑 密钥实时透视与一键测活中枢（可随时查看/临时覆盖）", expanded=(not bool(GEMINI_API_KEY))):
-        manual_key = st.text_input("临时粘贴/测试新 Key（留空则默认读 Secrets）", type="password")
+    with st.expander("🔑 临时密钥配置与接口测试（选填，默认已读 Secrets）"):
+        manual_key = st.text_input("临时粘贴/测试新 Key", type="password")
         eval_key = clean_str(manual_key) if manual_key else GEMINI_API_KEY
-
         if eval_key:
             masked = f"{eval_key[:6]}...{eval_key[-4:]}" if len(eval_key) >= 10 else eval_key
-            st.markdown(f"**当前生效 Key 状态**：`{masked}` | **总长度**：`{len(eval_key)}` 位")
-            if not eval_key.startswith("AIza"):
-                st.warning("⚠️ 警告：有效密钥通常必须以 `AIza` 开头！请确认未复制成项目 ID 或其他文本。")
-        else:
-            st.error("⚠️ 当前系统未检测到任何 Gemini API Key！")
-
-        if st.button("⚡ 1秒测试该密钥真实连通性 (无需传图)", use_container_width=True):
+            st.caption(f"当前生效 Key: `{masked}` ({len(eval_key)} 位)")
+        if st.button("⚡ 1秒测试该密钥连通性", use_container_width=True):
             if not eval_key:
-                st.error("请先填入或配置密钥！")
+                st.error("未检测到密钥！")
             else:
-                with st.spinner("正在直连 Google 服务器测试握手..."):
-                    try:
-                        genai.configure(api_key=eval_key)
-                        # 优先尝试 3.8，若受限自动适配
-                        success_m = None
-                        last_err = ""
-                        for m_name in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
-                            try:
-                                m = genai.GenerativeModel(m_name)
-                                r = m.generate_content("Ping")
-                                success_m = m_name
-                                break
-                            except Exception as sub_e:
-                                last_err = str(sub_e)
-
-                        if success_m:
-                            st.success(f"🟢 握手完美通过！密钥有效，成功调用【{success_m}】引擎！")
-                        else:
-                            st.error(f"🔴 Google API 拦截详情:\n{last_err}")
-                    except Exception as e:
-                        st.error(f"🔴 客户端配置异常: {str(e)}")
+                try:
+                    genai.configure(api_key=eval_key)
+                    success_m = None
+                    last_err = ""
+                    for m_name in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+                        try:
+                            m = genai.GenerativeModel(m_name)
+                            r = m.generate_content("Ping")
+                            success_m = m_name
+                            break
+                        except Exception as sub_e:
+                            last_err = str(sub_e)
+                    if success_m:
+                        st.success(f"🟢 通信正常！成功连接【{success_m}】引擎！")
+                    else:
+                        st.error(f"🔴 拦截原因: {last_err}")
+                except Exception as e:
+                    st.error(f"🔴 异常: {str(e)}")
 
     st.info("📌 **免打字极速模式**：直接上传截图，对阵、竞彩让球数(-1/0/+1)、大小球基线均由 AI 视觉自动提取。")
 
@@ -273,11 +257,11 @@ with tab1:
         active_key = clean_str(manual_key) if manual_key else GEMINI_API_KEY
         
         if not uploaded_files:
-            st.error("请至少上传一张截图（指数对比图或阵容伤停图）！")
+            st.error("请至少上传一张截图！")
         elif not active_key:
-            st.error("未检测到有效 Gemini API Key！请展开上方【密钥透视】中枢粘贴，或在 Secrets 中配置。")
+            st.error("未检测到有效 Gemini API Key！请展开上方临时配置填入，或在 Secrets 中配置。")
         else:
-            with st.spinner("AI 首席做市商正在看图识人、解析盘口、计算纯概率并推演自洽比分..."):
+            with st.spinner("Gemini 3.8 首席做市商正在看图识人、解析盘口、计算概率并推演自洽比分..."):
                 try:
                     processed_imgs = [compress_image_for_mobile(f) for f in uploaded_files]
                     rules_str = "\n".join(st.session_state.db.get("rules", []))
@@ -306,7 +290,7 @@ with tab1:
                         "### 📡 做市商精算与去抽水底牌（结合平博 No-Vig 纯概率）\n"
                         "### 🔍 首发阵容战力与核心伤停视觉穿透（识别名单 + xG折损量化）\n"
                         "### 📊 做市商微观盘口穿透（平博/皇冠/易胜博亚盘分歧 + 平博/皇冠大小球）\n"
-                        "### 🛡️ 竞彩实战风控防冷方案（让球方向风险定性 + 最优对冲策略）\n\n"
+                        "### 🛡️️ 竞彩实战风控防冷方案（让球方向风险定性 + 最优对冲策略）\n\n"
                         "---\n"
                         "【系统数据结构化回传要求】\n"
                         f"在研报末尾，必须严格附加一个用于程序自动解析落库的 JSON 块（用 {TICKS}json 与 {TICKS} 包裹），格式如下：\n"
@@ -339,7 +323,6 @@ with tab1:
 
                     genai.configure(api_key=active_key)
                     
-                    # 动态智能路由，先试 3.8，不可用自动降级
                     response = None
                     for m_cand in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
                         try:
@@ -351,7 +334,6 @@ with tab1:
                             continue
 
                     if not response:
-                        # 若全部捕获失败，发起一次直接调用抛出明确异常供定位
                         mdl = genai.GenerativeModel("gemini-1.5-flash")
                         response = mdl.generate_content([system_prompt, user_prompt] + processed_imgs)
 
@@ -406,9 +388,9 @@ with tab1:
                 except Exception as e:
                     st.error(f"推演执行失败: {str(e)}")
 
-# ==========================================
+# ==============================================================================
 # Tab 2: 结算审计（0 人工比分全自动裁判）
-# ==========================================
+# ==============================================================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
     records = st.session_state.db.get("history", [])
@@ -474,9 +456,9 @@ with tab2:
                         push_to_cloud(st.session_state.db)
                         st.rerun()
 
-# ==========================================
+# ==============================================================================
 # Tab 3: 错题复盘与自进化避坑库
-# ==========================================
+# ==============================================================================
 with tab3:
     st.markdown("**🧠 错题复盘与自进化避坑库**")
 
