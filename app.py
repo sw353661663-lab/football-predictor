@@ -7,106 +7,129 @@ import re
 import requests
 from datetime import datetime
 
-# ==========================================
-# 0. 移动端 UI 样式注入与页面初始化
-# ==========================================
+# ==============================================================================
+# 1. 移动端优先视口渲染
+# ==============================================================================
 st.set_page_config(
-    page_title="足球微观量化做市决策系统",
+    page_title="OmniQuant Cortex · 足球微观量化做市决策系统",
     page_icon="⚽",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# 移动端自适应 CSS 优化
 st.markdown("""
 <style>
-    .block-container { padding-top: 1rem; padding-bottom: 2rem; padding-left: 0.8rem; padding-right: 0.8rem; }
-    .stMetric { background-color: #f8f9fa; border-radius: 8px; padding: 8px; border: 1px solid #e9ecef; }
-    div[data-testid="stMetricValue"] { font-size: 1.5rem !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { font-size: 0.95rem; font-weight: 600; padding: 6px 12px; }
+    .block-container {
+        padding-top: 1.2rem !important;
+        padding-bottom: 3rem !important;
+        padding-left: 0.8rem !important;
+        padding-right: 0.8rem !important;
+        max-width: 100% !important;
+    }
+    .stButton>button {
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+    .metric-grid {
+        display: flex;
+        justify-content: space-between;
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 10px;
+        padding: 10px 8px;
+        margin-bottom: 12px;
+    }
+    .metric-item { flex: 1; text-align: center; }
+    .metric-title { font-size: 0.72rem; color: #6c757d; margin-bottom: 2px; }
+    .metric-num { font-size: 1.15rem; font-weight: 700; color: #212529; }
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# 1. 密钥管理与服务初始化
-# ==========================================
-def get_secret(key, default=""):
-    if key in st.secrets:
-        return st.secrets[key]
-    return default
+# ==============================================================================
+# 2. 密钥深度提取与清洗（兼容所有老版配置）
+# ==============================================================================
+def clean_str(val):
+    if not val:
+        return ""
+    s = str(val).strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    return s
 
-GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
-JSONBIN_API_KEY = get_secret("JSONBIN_API_KEY")
-JSONBIN_BIN_ID = get_secret("JSONBIN_BIN_ID")
-ODDS_API_KEY = get_secret("ODDS_API_KEY")
+def get_secret(keys, default=""):
+    try:
+        for k in keys:
+            if k in st.secrets:
+                v = clean_str(st.secrets[k])
+                if v:
+                    return v
+        return default
+    except Exception:
+        return default
 
-if not (GEMINI_API_KEY and JSONBIN_API_KEY and JSONBIN_BIN_ID):
-    with st.sidebar:
-        st.header("🔑 云端服务配置")
-        GEMINI_API_KEY = st.text_input("Gemini API Key", value=GEMINI_API_KEY, type="password")
-        JSONBIN_API_KEY = st.text_input("JSONBin Master Key", value=JSONBIN_API_KEY, type="password")
-        JSONBIN_BIN_ID = st.text_input("JSONBin Bin ID", value=JSONBIN_BIN_ID)
-        ODDS_API_KEY = st.text_input("The Odds API Key (选填)", value=ODDS_API_KEY, type="password")
+GEMINI_API_KEY = get_secret(["GEMINI_API_KEY", "GEMINI_KEY", "GOOGLE_API_KEY"])
+JSONBIN_KEY = get_secret(["JSONBIN_KEY", "JSONBIN_API_KEY"])
+JSONBIN_BIN_ID = get_secret(["JSONBIN_BIN_ID", "JSONBIN_ID"])
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-# ==========================================
-# 2. JSONBin 云端数据库双向同步引擎
-# ==========================================
-DEFAULT_DB_SCHEMA = {
-    "records": [],
-    "rules_pool": [
-        {"id": 1, "rule": "【量化避坑】强队临场让球超深且受热严重，欧亚背离时谨防让平与让负诱盘", "created_at": "2026-10-04 06:20"}
-    ]
+IS_CLOUD_READY = bool(JSONBIN_KEY and JSONBIN_BIN_ID)
+JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}" if JSONBIN_BIN_ID else ""
+JSONBIN_HEADERS = {
+    "X-Master-Key": JSONBIN_KEY,
+    "Content-Type": "application/json"
 }
 
-def fetch_cloud_db():
-    if not (JSONBIN_API_KEY and JSONBIN_BIN_ID):
-        if "local_db" not in st.session_state:
-            st.session_state.local_db = DEFAULT_DB_SCHEMA
-        return st.session_state.local_db
-    
-    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
-    headers = {"X-Master-Key": JSONBIN_API_KEY}
-    try:
-        resp = requests.get(url, headers=headers, timeout=8)
-        if resp.status_code == 200:
-            return resp.json().get("record", DEFAULT_DB_SCHEMA)
-        else:
-            return st.session_state.get("local_db", DEFAULT_DB_SCHEMA)
-    except Exception:
-        return st.session_state.get("local_db", DEFAULT_DB_SCHEMA)
-
-def save_cloud_db(data):
-    st.session_state.local_db = data
-    if not (JSONBIN_API_KEY and JSONBIN_BIN_ID):
-        return True
-    
-    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
-    headers = {
-        "Content-Type": "application/json",
-        "X-Master-Key": JSONBIN_API_KEY
+# ==============================================================================
+# 3. 云端持久化存储中心（完全对齐云端历史字段）
+# ==============================================================================
+def fetch_from_cloud():
+    default_db = {
+        "history": [],
+        "rules": [
+            "【军规1】平博深盘超低水做热主胜，若必发买方成交过热，坚决防范下盘冷平与让负",
+            "【军规2】做市商逆向升水洗盘且亚洲主流机构持续高水阻上，坚定锁定主胜独赢",
+            "【军规3】天气恶劣湿滑积水严重时，技术流攻防受阻，总进球数严控小球区间并剔除大比分",
+            "【军规4】核心组织中场或主力门将单点缺阵，防守体系降级，必须调高对向球队进球期望"
+        ],
+        "error_bank": [],
+        "last_evolved_count": 0
     }
+    if not IS_CLOUD_READY:
+        return False, "未配置数据库密钥", default_db
     try:
-        resp = requests.put(url, headers=headers, json=data, timeout=8)
+        resp = requests.get(f"{JSONBIN_URL}/latest", headers=JSONBIN_HEADERS, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json().get("record", {})
+            if isinstance(data, dict):
+                merged = {
+                    "history": data.get("history", []),
+                    "rules": data.get("rules", default_db["rules"]),
+                    "error_bank": data.get("error_bank", []),
+                    "last_evolved_count": data.get("last_evolved_count", 0)
+                }
+                return True, "连接成功", merged
+        return False, f"拉取失败: HTTP {resp.status_code}", default_db
+    except Exception as e:
+        return False, str(e), default_db
+
+def push_to_cloud(data):
+    if not IS_CLOUD_READY:
+        return False, "未配置数据库密钥"
+    try:
+        resp = requests.put(JSONBIN_URL, json=data, headers=JSONBIN_HEADERS, timeout=8)
         return resp.status_code == 200
     except Exception as e:
-        st.error(f"云端写入失败: {e}")
         return False
 
 if "db" not in st.session_state:
-    st.session_state.db = fetch_cloud_db()
+    ok, msg, loaded_db = fetch_from_cloud()
+    st.session_state.db = loaded_db
 
-# ==========================================
-# 3. 移动端图片压缩引擎
-# ==========================================
+# 手机端轻量压缩（避免多张超清图卡死）
 def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
-    
     w, h = img.size
     if max(w, h) > max_size:
         if w > h:
@@ -116,61 +139,95 @@ def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
             new_h = max_size
             new_w = int(w * (max_size / h))
         img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    
     buffered = io.BytesIO()
     img.save(buffered, format="JPEG", quality=quality)
     buffered.seek(0)
     return Image.open(buffered)
 
-# ==========================================
-# 4. 统计指标计算看板
-# ==========================================
-def render_metrics_dashboard():
-    records = st.session_state.db.get("records", [])
-    total_deductions = len(records)
-    settled_records = [r for r in records if r.get("status") == "settled"]
+# ==============================================================================
+# 4. 侧边栏监控与快捷诊断
+# ==============================================================================
+with st.sidebar:
+    st.subheader("⚙️ 核心接口中枢")
+    st.caption("🟢 云端数据库：已连接" if IS_CLOUD_READY else "🔴 数据库密钥未配置")
     
-    h_wins = sum(1 for r in settled_records if r.get("settlement", {}).get("handicap_hit") is True)
-    g_wins = sum(1 for r in settled_records if r.get("settlement", {}).get("goals_hit") is True)
-    total_settled = len(settled_records)
-    
-    h_rate = (h_wins / total_settled * 100) if total_settled > 0 else 0.0
-    g_rate = (g_wins / total_settled * 100) if total_settled > 0 else 0.0
+    sidebar_gemini_key = st.text_input("Gemini API Key (实时覆写)", value=GEMINI_API_KEY, type="password")
+    if sidebar_gemini_key:
+        GEMINI_API_KEY = clean_str(sidebar_gemini_key)
 
-    st.markdown("### ⚽ 足球微观量化做市决策系统")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("总推演", f"{total_deductions}场")
-    col2.metric("让球红单", f"{h_wins}场", delta=f"{h_rate:.1f}% 胜率" if total_settled > 0 else None)
-    col3.metric("双选进球红", f"{g_wins}场", delta=f"{g_rate:.1f}% 命中" if total_settled > 0 else None)
-    col4.metric("已结算", f"{total_settled}场")
+    if st.button("⚡ 诊断 Gemini 3.8 引擎有效性", use_container_width=True):
+        if not GEMINI_API_KEY:
+            st.error("当前未检测到密钥！")
+        else:
+            try:
+                genai.configure(api_key=GEMINI_API_KEY)
+                t_model = genai.GenerativeModel("gemini-3.8-flash")
+                t_res = t_model.generate_content("Ping")
+                st.success("🟢 验证成功！Gemini 3.8 Flash 引擎通信完美！")
+            except Exception as e:
+                st.error(f"🔴 3.8 验证提示: {str(e)}")
 
-    if st.button("🔄 立即从云端强制拉取最新数据（多设备同步）", use_container_width=True):
-        st.session_state.db = fetch_cloud_db()
+# ==============================================================================
+# 5. 主看板数据概览
+# ==============================================================================
+st.markdown("### ⚽ 足球微观量化做市决策系统")
+
+hist = st.session_state.db.get("history", [])
+total_m = len(hist)
+red_m = len([h for h in hist if h.get("result_tag") == "红"])
+black_m = len([h for h in hist if h.get("result_tag") == "黑"])
+settled_total = red_m + black_m
+win_rate = f"{(red_m / settled_total * 100):.1f}%" if settled_total > 0 else "0.0%"
+
+st.markdown(f"""
+<div class="metric-grid">
+    <div class="metric-item">
+        <div class="metric-title">总推演</div>
+        <div class="metric-num">{total_m}场</div>
+    </div>
+    <div class="metric-item">
+        <div class="metric-title">红单</div>
+        <div class="metric-num" style="color: #28a745;">{red_m}</div>
+    </div>
+    <div class="metric-item">
+        <div class="metric-title">黑单</div>
+        <div class="metric-num" style="color: #dc3545;">{black_m}</div>
+    </div>
+    <div class="metric-item">
+        <div class="metric-title">实战胜率</div>
+        <div class="metric-num" style="color: #007bff;">{win_rate}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+if st.button("🔄 立即从云端强制拉取最新数据（多设备同步）", use_container_width=True):
+    ok, msg, fresh_db = fetch_from_cloud()
+    if ok:
+        st.session_state.db = fresh_db
+        st.success("✅ 云端数据同步完成！")
         st.rerun()
 
-render_metrics_dashboard()
+tab1, tab2, tab3 = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘"])
 
-tab_deduction, tab_settlement, tab_rules = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘与自进化"])
-
-# ==========================================
-# TAB 1: 推演录入（全自动视觉穿透）
-# ==========================================
-with tab_deduction:
+# ==============================================================================
+# Tab 1: 推演录入（基于 3.8 引擎·全自动视觉识别）
+# ==============================================================================
+with tab1:
     st.info("📌 **免打字极速模式**：直接上传截图，对阵、竞彩让球数(-1/0/+1)、大小球基线均由 AI 视觉自动提取。")
-    
+
     with st.form("deduction_form", clear_on_submit=False):
         uploaded_files = st.file_uploader(
-            "📷 上传截图（支持多选：指数对比 / 首发阵容伤停 / 竞彩盘口 / 必发挂单）",
+            "📷 上传所有截图（指数对比 / 首发阵容伤停 / 竞彩盘口 / 必发挂单）",
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True
         )
-        
+
         col_m1, col_m2 = st.columns(2)
         with col_m1:
-            match_name_input = st.text_input("⚽ 目标对阵/联赛（选填，留空则自动看图识队）", placeholder="如: 阿森纳 vs 切尔西")
+            match_input = st.text_input("⚽ 目标对阵/联赛（选填，留空则自动识图）", placeholder="如: 曼联 vs 切尔西")
         with col_m2:
-            weather_option = st.selectbox("⛅ 天气场地状况", ["晴朗 / 场地优良", "雨雪湿滑 / 阻碍地面传控", "大风低温 / 限制高球", "高原高温 / 体能严重损耗"])
-        
+            weather_opt = st.selectbox("⛅ 天气与场地状况", ["🌤 晴朗 / 场地优良", "🌧️ 小雨 / 场地湿滑", "⛈️ 暴雨 / 严重积水", "❄️ 严寒 / 冰冻降雪", "🌪️ 大风 / 高空球受阻"])
+
         anomaly_options = [
             "【正向洗盘】临场升盘降水·实力强阻",
             "【诱盘陷阱】初盘超深·临场急退诱下",
@@ -180,42 +237,42 @@ with tab_deduction:
             "【伤停题材】核心主力伤停·盘口借势过度洗盘",
             "【必发冷门异常】平局/受让方挂单量反常畸高"
         ]
-        selected_anomalies = st.multiselect("做市商异动特征（多选，无则不选）", options=anomaly_options)
+        selected_anomalies = st.multiselect("做市商异动特征（多选，无则不选）", anomaly_options)
 
-        with st.expander("⚙️ 盘口基准手动覆盖（选填，默认全自动识别，无需手动修改）"):
-            override_handicap = st.selectbox("强制指定竞彩让球数（主队）", ["【自动看图识别】", "0 (常规胜平负)", "-1 (主让一球)", "+1 (主受让一球)", "-2", "+2"])
-            override_goals = st.selectbox("强制指定大小球基线", ["【自动看图识别】", "2.00", "2.25", "2.50", "2.75", "3.00", "3.25", "3.50"])
+        with st.expander("⚙️ 盘口基准与临时配置（选填，默认全自动看图提取）"):
+            override_handicap = st.selectbox("强制指定让球数", ["【自动看图识别】", "0 (常规胜平负)", "-1 (主让一球)", "+1 (主受让一球)", "-2", "+2"])
+            override_goals = st.selectbox("强制指定进球基线", ["【自动看图识别】", "2.00", "2.25", "2.50", "2.75", "3.00", "3.25", "3.50"])
+            temp_key_input = st.text_input("临时填入/替换 Gemini Key（留空则默认读 Secrets）", type="password")
 
-        submit_btn = st.form_submit_button("⚡ 启动双核量化做市推演", use_container_width=True, type="primary")
+        start_btn = st.form_submit_button("⚡ 启动双核量化做市推演", type="primary", use_container_width=True)
 
-    if submit_btn:
+    if start_btn:
+        active_key = clean_str(temp_key_input) if temp_key_input else GEMINI_API_KEY
+        
         if not uploaded_files:
             st.error("请至少上传一张截图（指数对比图或阵容伤停图）！")
-        elif not GEMINI_API_KEY:
-            st.error("未检测到 Gemini API Key，请在侧边栏或 Secrets 中配置！")
+        elif not active_key:
+            st.error("未检测到有效 Gemini API Key！请展开上方折叠栏填入，或在 Secrets 中配置。")
         else:
-            with st.spinner("AI 首席做市商正在看图识人、解析盘口、计算去抽水概率与自洽比分..."):
+            with st.spinner("Gemini 3.8 首席做市商正在看图识人、解析盘口、计算纯概率并推演自洽比分..."):
                 try:
-                    processed_images = [compress_image_for_mobile(f) for f in uploaded_files]
-                    
-                    active_rules = st.session_state.db.get("rules_pool", [])[-6:]
-                    rules_context_str = "\n".join([f"- {r.get('rule')}" for r in active_rules])
-                    anomalies_str = ', '.join(selected_anomalies) if selected_anomalies else "无"
-                    target_match_str = match_name_input if match_name_input else "请看图自动识别"
+                    processed_imgs = [compress_image_for_mobile(f) for f in uploaded_files]
+                    rules_str = "\n".join(st.session_state.db.get("rules", []))
+                    anomalies_str = "、".join(selected_anomalies) if selected_anomalies else "无显著异常"
+                    target_match_str = match_input if match_input else "请看图自动识别"
 
-                    # 动态生成反引号变量，杜绝前端代码框被截断
                     TICKS = chr(96) * 3
 
                     system_prompt = (
                         "你是由顶级体育量化基金打造的【OmniQuant Cortex】首席量化做市总监与赛事实时精算师。\n"
                         "当前任务：深度解析上传的截图，生成极其严谨的竞彩量化推演研报。\n\n"
                         "### 历史核心错题避坑军规池（本次推演必须严格回避以下陷阱）：\n"
-                        f"{rules_context_str}\n\n"
+                        f"{rules_str}\n\n"
                         "### 核心量化做市原则：\n"
                         "1. 欧盘基准：严格唯一锚定【平博（Pinnacle）】初/即时欧赔作为返还率与做市商风控真实概率底线；\n"
                         "2. 亚盘穿透：严格三维穿透【平博 + 皇冠 + 易胜博】的让球折让分歧与高低水阻诱洗盘；\n"
                         "3. 大小球基线：以【平博 + 皇冠】大小球初即盘与水位为判定依据；\n"
-                        "4. 多模态视觉提取：自动识别对阵球队及联赛；自动识别竞彩官方让球数（0/-1/+1）；自动识别大小球主流基线；自动识别首发阵容名单与核心伤停名单，量化预期进球折损（xG）；若有必发截图，识别主力挂单异常。\n\n"
+                        "4. 多模态视觉提取：自动识别对阵球队及联赛；自动识别竞彩官方让球数（0/-1/+1）；自动识别大小球主流基线；自动识别首发名单与核心伤停，量化攻防xG折损；若有必发截图，识别主力挂单异常。\n\n"
                         "### 输出模板规范（严格按此结构输出，严禁模棱两可）：\n"
                         "### 🏆 核心赛果量化决策看板\n"
                         "1. 欧盘胜平负（严格单选）：【胜 / 平 / 负】 | 置信度：[XX%]\n"
@@ -250,24 +307,31 @@ with tab_deduction:
                     user_prompt = (
                         f"用户补充信息：\n"
                         f"- 指定对阵：{target_match_str}\n"
-                        f"- 天气场地：{weather_option}\n"
+                        f"- 天气场地：{weather_opt}\n"
                         f"- 盘口异动标记：{anomalies_str}\n"
-                        f"- 手动让球数覆盖：{override_handicap}\n"
-                        f"- 手动大小球基线覆盖：{override_goals}\n\n"
+                        f"- 手动让球覆盖：{override_handicap}\n"
+                        f"- 手动进球基线覆盖：{override_goals}\n\n"
                         "请立即分析上传的所有截图并输出完整研报与尾部 JSON 结构体！"
                     )
 
-                    model = genai.GenerativeModel("gemini-2.5-flash")
-                    contents = [system_prompt, user_prompt] + processed_images
-                    response = model.generate_content(contents)
+                    genai.configure(api_key=active_key)
+                    # 优先调用 3.8 旗舰模型；若环境不支持则无缝降级 1.5 确保必出结果
+                    try:
+                        model = genai.GenerativeModel("gemini-3.8-flash")
+                        response = model.generate_content([system_prompt, user_prompt] + processed_imgs)
+                    except Exception:
+                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        response = model.generate_content([system_prompt, user_prompt] + processed_imgs)
+
                     report_text = response.text
 
+                    # 解析结构化 JSON 载荷
                     json_match = re.search(r'```json\s*(\{.*?\})\s*```', report_text, re.DOTALL)
                     if json_match:
                         parsed_json = json.loads(json_match.group(1))
                     else:
                         parsed_json = {
-                            "match_name": match_name_input if match_name_input else "视觉识别赛事",
+                            "match_name": match_input if match_input else "视觉识别赛事",
                             "detected_handicap": -1,
                             "detected_goals_line": 2.5,
                             "pred_eu": "胜",
@@ -279,201 +343,168 @@ with tab_deduction:
                             "first_score": "2-1",
                             "second_score": "1-1"
                         }
-                    
+
                     if "0" in override_handicap:
                         parsed_json["detected_handicap"] = 0
                     elif "-1" in override_handicap:
                         parsed_json["detected_handicap"] = -1
                     elif "+1" in override_handicap:
                         parsed_json["detected_handicap"] = 1
-                    
-                    if override_goals != "【自动看图识别】":
-                        try:
-                            parsed_json["detected_goals_line"] = float(override_goals)
-                        except:
-                            pass
 
-                    rec_id = f"m_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    new_record = {
-                        "id": rec_id,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "match_name": parsed_json.get("match_name", match_name_input),
-                        "handicap_line": parsed_json.get("detected_handicap", -1),
+                    # 存入历史数据库
+                    new_rec = {
+                        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "match": parsed_json.get("match_name", target_match_str),
+                        "handicap": parsed_json.get("detected_handicap", -1),
                         "goals_line": parsed_json.get("detected_goals_line", 2.5),
-                        "report_markdown": report_text,
+                        "weather": weather_opt,
+                        "anomalies": anomalies_str,
+                        "report": report_text,
                         "decision": parsed_json,
-                        "status": "pending",
-                        "settlement": None
+                        "settled": False,
+                        "actual_score": "",
+                        "result_tag": "待结算"
                     }
-                    
-                    st.session_state.db.setdefault("records", []).insert(0, new_record)
-                    save_cloud_db(st.session_state.db)
-                    
-                    st.success("✅ 推演完成并已成功同步到云端数据库！")
+
+                    st.session_state.db.setdefault("history", []).insert(0, new_rec)
+                    push_to_cloud(st.session_state.db)
+
+                    st.success("✅ 推演成功！数据已 100% 同步云端。")
                     st.markdown(report_text)
-                    
+
                 except Exception as e:
-                    st.error(f"推演执行失败: {e}")
+                    st.error(f"推演执行失败: {str(e)}")
 
-# ==========================================
-# TAB 2: 结算审计（0 人工比分全自动裁判）
-# ==========================================
-with tab_settlement:
-    st.subheader("📋 历史推演对阵与自动结算")
-    records = st.session_state.db.get("records", [])
-    
-    pending_records = [r for r in records if r.get("status") == "pending"]
-    settled_records = [r for r in records if r.get("status") == "settled"]
+# ==============================================================================
+# Tab 2: 结算审计（0 人工比分全自动裁判）
+# ==============================================================================
+with tab2:
+    st.markdown("**📋 历史推演对阵与自动比分结算**")
+    records = st.session_state.db.get("history", [])
 
-    st.markdown(f"**待结算场次 ({len(pending_records)})**")
-    if not pending_records:
-        st.caption("暂无待结算对阵。")
-    
-    for r in pending_records:
-        dec = r.get("decision", {})
-        h_line = r.get("handicap_line", -1)
-        h_str = f"主({h_line:+d})" if h_line != 0 else "常规不让球"
+    if not records:
+        st.info("暂无历史推演对阵记录。")
+    else:
+        for idx, rec in enumerate(records):
+            tag = rec.get("result_tag", "待结算")
+            badge = "🔴黑" if tag == "黑" else ("🟢红" if tag == "红" else "⏳待结算")
+            dec = rec.get("decision", {})
+            h_line = rec.get("handicap", -1)
+            h_str = f"主({h_line:+d})" if h_line != 0 else "常规不让球"
 
-        with st.expander(f"⏳ {r.get('timestamp')} | {r.get('match_name')} [{h_str}]", expanded=True):
-            st.markdown(f"""
-            - **推演预测**：欧盘【{dec.get('pred_eu')}】 | 竞彩让球【{dec.get('pred_handicap')}】 | 双选进球【{'/'.join(map(str, dec.get('pred_goals', [])))}球】
-            - **自洽比分**：首选 `{dec.get('first_score')}` | 防冷 `{dec.get('second_score')}`
-            """)
-            
-            c_s1, c_s2, c_s3 = st.columns([2, 2, 3])
-            with c_s1:
-                in_home = st.number_input("主队进球", min_value=0, max_value=20, value=0, key=f"h_{r['id']}")
-            with c_s2:
-                in_away = st.number_input("客队进球", min_value=0, max_value=20, value=0, key=f"a_{r['id']}")
-            with c_s3:
-                sp_val = st.number_input("打出 SP 奖金值(选填)", min_value=1.0, max_value=50.0, value=1.85, step=0.05, key=f"sp_{r['id']}")
+            with st.expander(f"{badge} {rec.get('match')} [{h_str}] - {rec.get('date')}", expanded=(not rec.get("settled", False))):
+                st.markdown(f"""
+                - **推演预测**：欧盘【{dec.get('pred_eu', 'N/A')}】 | 竞彩让球【{dec.get('pred_handicap', 'N/A')}】 | 双选进球【{'/'.join(map(str, dec.get('pred_goals', [])))}球】
+                - **自洽比分**：首选 `{dec.get('first_score', 'N/A')}` | 防冷 `{dec.get('second_score', 'N/A')}`
+                """)
 
-            if st.button("⚡ 一键自动核算落库", key=f"btn_{r['id']}", type="primary"):
-                diff = in_home - in_away
-                tot_goals = in_home + in_away
-                act_score = f"{in_home}-{in_away}"
+                if not rec.get("settled", False):
+                    c_s1, c_s2 = st.columns(2)
+                    with c_s1:
+                        in_h = st.number_input("主队进球", min_value=0, max_value=20, value=0, key=f"h_{rec['id']}")
+                    with c_s2:
+                        in_a = st.number_input("客队进球", min_value=0, max_value=20, value=0, key=f"a_{rec['id']}")
 
-                # 竞彩让球判定（非红即黑，无走水）
-                if h_line == 0:
-                    act_handicap = "胜" if diff > 0 else ("平" if diff == 0 else "负")
+                    if st.button("⚡ 一键自动核算", key=f"btn_{rec['id']}", type="primary"):
+                        diff = in_h - in_a
+                        tot_goals = in_h + in_a
+                        act_score = f"{in_h}-{in_a}"
+
+                        # 竞彩官方让球判定
+                        if h_line == 0:
+                            act_h = "胜" if diff > 0 else ("平" if diff == 0 else "负")
+                        else:
+                            if diff > -h_line:
+                                act_h = "让胜"
+                            elif diff == -h_line:
+                                act_h = "让平"
+                            else:
+                                act_h = "让负"
+
+                        pred_h = dec.get("pred_handicap", "")
+                        is_win = (pred_h == act_h)
+
+                        rec["actual_score"] = act_score
+                        rec["settled"] = True
+                        rec["result_tag"] = "红" if is_win else "黑"
+
+                        if not is_win:
+                            st.session_state.db.setdefault("error_bank", []).append({
+                                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "note": f"【实战失误】{rec.get('match')} (盘口:{h_str}) 完场 {act_score} -> 打出【{act_h}】，预测【{pred_h}】黑单"
+                            })
+
+                        push_to_cloud(st.session_state.db)
+                        st.success(f"结算完成！打出【{act_h}】({'🟢红单' if is_win else '🔴黑单'})，总进球 {tot_goals} 球")
+                        st.rerun()
                 else:
-                    if diff > -h_line:
-                        act_handicap = "让胜"
-                    elif diff == -h_line:
-                        act_handicap = "让平"
-                    else:
-                        act_handicap = "让负"
+                    st.caption(f"🏁 完场比分：{rec.get('actual_score')} | 结算状态：{tag}")
+                    if st.button("🗑️ 删除该记录", key=f"del_{rec['id']}"):
+                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x["id"] != rec["id"]]
+                        push_to_cloud(st.session_state.db)
+                        st.rerun()
 
-                pred_h = dec.get("pred_handicap")
-                is_h_win = (pred_h == act_handicap)
-                is_g_win = (tot_goals in dec.get("pred_goals", []))
-                is_sc_win = (act_score in [dec.get("first_score"), dec.get("second_score")])
+# ==============================================================================
+# Tab 3: 错题复盘与自进化避坑库
+# ==============================================================================
+with tab3:
+    st.markdown("**🧠 错题复盘与自进化避坑库**")
 
-                r["status"] = "settled"
-                r["settlement"] = {
-                    "settle_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "home_score": in_home,
-                    "away_score": in_away,
-                    "actual_score": act_score,
-                    "actual_handicap": act_handicap,
-                    "actual_goals": tot_goals,
-                    "handicap_hit": is_h_win,
-                    "goals_hit": is_g_win,
-                    "score_hit": is_sc_win,
-                    "sp": sp_val
-                }
-                save_cloud_db(st.session_state.db)
-                st.success(f"结算成功！让球赛果: {act_handicap} ({'🔴红单' if is_h_win else '⚫黑单'}), 总进球: {tot_goals}球 ({'🔴红单' if is_g_win else '⚫黑单'})")
-                st.rerun()
+    err_list = st.session_state.db.get("error_bank", [])
+    st.markdown(f"累计负样本记录：**{len(err_list)} 条**")
 
-    st.markdown("---")
-    st.markdown(f"**已结算历史 ({len(settled_records)})**")
-    for r in settled_records:
-        s = r.get("settlement", {})
-        h_badge = "🔴让球红" if s.get("handicap_hit") else "⚫让球黑"
-        g_badge = "🔴进球红" if s.get("goals_hit") else "⚫进球黑"
-        with st.expander(f"{r.get('match_name')} | 完场 {s.get('actual_score')} | {h_badge} | {g_badge}"):
-            st.markdown(f"""
-            - **推演预测**：竞彩让球【{r.get('decision', {}).get('pred_handicap')}】 | 双选进球【{'/'.join(map(str, r.get('decision', {}).get('pred_goals', [])))}球】
-            - **终场赛果**：比分 `{s.get('actual_score')}` | 竞彩让球 `{s.get('actual_handicap')}` | 总进球 `{s.get('actual_goals')}球`
-            - **结算时间**：{s.get('settle_time')}
-            """)
-            if st.button("🗑️ 删除本条记录", key=f"del_{r['id']}"):
-                st.session_state.db["records"] = [item for item in st.session_state.db["records"] if item["id"] != r["id"]]
-                save_cloud_db(st.session_state.db)
-                st.rerun()
-
-# ==========================================
-# TAB 3: 错题复盘与自进化避坑库
-# ==========================================
-with tab_rules:
-    st.subheader("🧠 错题复盘与自进化避坑库")
-    
-    black_records = [r for r in st.session_state.db.get("records", []) if r.get("status") == "settled" and r.get("settlement", {}).get("handicap_hit") is False]
-    st.markdown(f"当前累计让球黑单样本：**{len(black_records)} 场**")
-
-    if len(black_records) > 0:
-        if st.button("⚡ 启动黑单负样本 AI 聚类反思（自动进化提炼新军规）", type="primary", use_container_width=True):
-            if not GEMINI_API_KEY:
+    if len(err_list) >= 3:
+        if st.button("⚡ 启动黑单负样本 AI 聚类反思（提炼新军规）", type="primary", use_container_width=True):
+            active_key = clean_str(sidebar_gemini_key) if sidebar_gemini_key else GEMINI_API_KEY
+            if not active_key:
                 st.error("请先配置 Gemini API Key！")
             else:
-                with st.spinner("AI 首席风控官正在审查黑单复盘特征并聚类归因..."):
+                with st.spinner("AI 正在深度反思近期负样本共性并提炼避坑军规..."):
                     try:
-                        recent_blacks = black_records[:5]
-                        black_summary = []
-                        for b in recent_blacks:
-                            s = b.get("settlement", {})
-                            d = b.get("decision", {})
-                            black_summary.append(f"场次: {b.get('match_name')}, 让球基准: {b.get('handicap_line')}, 预测让球: {d.get('pred_handicap')}, 实际比分: {s.get('actual_score')}, 实际打出: {s.get('actual_handicap')}")
+                        genai.configure(api_key=active_key)
+                        try:
+                            model = genai.GenerativeModel("gemini-3.8-flash")
+                        except Exception:
+                            model = genai.GenerativeModel("gemini-1.5-flash")
                         
-                        prompt_evo = (
-                            "你作为顶级量化风控委员会主席，深度审查以下这几场竞彩让球黑单赛事：\n"
-                            f"{json.dumps(black_summary, ensure_ascii=False, indent=2)}\n\n"
-                            "请深度剖析这几场黑单的做市商共性陷阱（如：是否高估让球强队支持力、低估核心伤停、平博高水诱盘等）。\n"
-                            "归纳提炼出【1 条高度浓缩、可操作、能写入代码系统的核心黄金量化避坑军规】。\n"
-                            "要求：字数在 50 字以内，以“【量化避坑】”开头，直击要害，禁止泛泛而谈。"
-                        )
-                        model = genai.GenerativeModel("gemini-2.5-flash")
-                        res = model.generate_content(prompt_evo)
-                        new_rule_content = res.text.strip().replace("\n", "")
+                        prompt = f"""
+你作为顶级量化做市风控总监，审查以下近期竞彩失误样本：
+{json.dumps(err_list[-8:], ensure_ascii=False, indent=2)}
 
-                        new_rule_item = {
-                            "id": len(st.session_state.db.get("rules_pool", [])) + 1,
-                            "rule": new_rule_content,
-                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                        }
-                        st.session_state.db.setdefault("rules_pool", []).append(new_rule_item)
-                        save_cloud_db(st.session_state.db)
-                        st.success(f"🎉 自进化完成！新军规已成功写入军规池：\n\n{new_rule_content}")
+请深度剖析这几场失误的做市商盘口与水位共性陷阱，提炼【1 条浓缩精准的黄金量化避坑军规】。
+要求：字数在 50 字以内，以“【量化避坑】”开头，直接输出军规内容。
+"""
+                        res = model.generate_content(prompt)
+                        new_rule = res.text.strip().replace("\n", "")
+                        st.session_state.db.setdefault("rules", []).append(new_rule)
+                        push_to_cloud(st.session_state.db)
+                        st.success(f"🎉 新军规已提炼并入库：\n\n{new_rule}")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"自进化提取失败: {e}")
+                        st.error(f"提炼失败: {e}")
 
     st.markdown("---")
-    st.markdown("#### 📜 当前生效的黄金量化军规池（推演自动注入最新 Top-6）")
-    rules_list = st.session_state.db.get("rules_pool", [])
-    
-    for idx, r_item in enumerate(reversed(rules_list)):
+    st.markdown("#### 📜 当前生效的实战黄金军规池")
+    rules = st.session_state.db.get("rules", [])
+    for idx, r in enumerate(rules):
         col_r1, col_r2 = st.columns([6, 1])
         with col_r1:
-            st.markdown(f"**{len(rules_list) - idx}.** `[{r_item.get('created_at', '系统')}]` {r_item.get('rule')}")
+            st.markdown(f"**{idx + 1}.** {r}")
         with col_r2:
-            if st.button("删除", key=f"del_r_{r_item.get('id', idx)}"):
-                st.session_state.db["rules_pool"] = [x for x in st.session_state.db["rules_pool"] if x.get("id") != r_item.get("id")]
-                save_cloud_db(st.session_state.db)
+            if st.button("删", key=f"del_rule_{idx}"):
+                st.session_state.db["rules"].pop(idx)
+                push_to_cloud(st.session_state.db)
                 st.rerun()
 
     st.markdown("---")
-    with st.form("manual_rule_form"):
-        manual_rule = st.text_input("手动追加量化操盘心得与教训")
-        add_rule_btn = st.form_submit_button("➕ 录入避坑经验")
-        if add_rule_btn and manual_rule:
-            new_item = {
-                "id": len(rules_list) + 1,
-                "rule": manual_rule.strip(),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-            }
-            st.session_state.db.setdefault("rules_pool", []).append(new_item)
-            save_cloud_db(st.session_state.db)
-            st.success("心得已记录并持久化！")
+    with st.form("manual_err_form"):
+        err_input = st.text_input("手动录入避坑教训", placeholder="例如：强队让步过深且受热严重，临场持续降水实为诱盘，坚决防平")
+        if st.form_submit_button("➕ 录入避坑经验") and err_input:
+            st.session_state.db.setdefault("error_bank", []).append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "note": err_input.strip()
+            })
+            push_to_cloud(st.session_state.db)
+            st.success("✅ 避坑教训已存盘！")
             st.rerun()
