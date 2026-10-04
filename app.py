@@ -83,6 +83,23 @@ def clean_str(val):
         s = s.strip().strip('"').strip("'").strip(',').strip(';').strip()
     return s
 
+def safe_parse_handicap(val):
+    """安全解析让球数，防止字符串或浮点数引发格式化崩溃"""
+    if val is None:
+        return 0
+    try:
+        if isinstance(val, int):
+            return val
+        if isinstance(val, float):
+            return int(val)
+        s = str(val).strip()
+        m = re.search(r'([+-]?\d+)', s)
+        if m:
+            return int(m.group(1))
+        return 0
+    except Exception:
+        return 0
+
 def get_secret(keys, default=""):
     try:
         for k in keys:
@@ -280,7 +297,7 @@ with tab1:
         elif not active_key:
             st.error("未检测到有效 Gemini API Key！请在 Secrets 中配置。")
         else:
-            with st.spinner("Gemini 3.8 首席做市商正在看图识人、解析盘口、计算概率并推演自洽比分..."):
+            with st.spinner("AI 首席做市商正在看图识人、解析盘口、计算概率并推演自洽比分..."):
                 try:
                     processed_imgs = [compress_image_for_mobile(f) for f in uploaded_files]
                     rules_str = "\n".join(st.session_state.db.get("rules", FULL_8_RULES))
@@ -342,9 +359,8 @@ with tab1:
 
                     genai.configure(api_key=active_key)
                     
-                    # 动态智能路由并捕获真实执行的模型代号
                     response = None
-                    used_model = "未知引擎"
+                    used_model = "gemini-3.8-flash"
                     for m_cand in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
                         try:
                             mdl = genai.GenerativeModel(m_cand)
@@ -380,18 +396,19 @@ with tab1:
                             "second_score": "1-1"
                         }
 
+                    parsed_h = safe_parse_handicap(parsed_json.get("detected_handicap", -1))
                     if "0" in override_handicap:
-                        parsed_json["detected_handicap"] = 0
+                        parsed_h = 0
                     elif "-1" in override_handicap:
-                        parsed_json["detected_handicap"] = -1
+                        parsed_h = -1
                     elif "+1" in override_handicap:
-                        parsed_json["detected_handicap"] = 1
+                        parsed_h = 1
 
                     new_rec = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                         "match": parsed_json.get("match_name", target_match_str),
-                        "handicap": parsed_json.get("detected_handicap", -1),
+                        "handicap": parsed_h,
                         "goals_line": parsed_json.get("detected_goals_line", 2.5),
                         "weather": weather_opt,
                         "anomalies": anomalies_str,
@@ -406,7 +423,6 @@ with tab1:
                     st.session_state.db.setdefault("history", []).insert(0, new_rec)
                     push_to_cloud(st.session_state.db)
 
-                    # 显式回显当前使用的执行引擎
                     st.success(f"✅ 推演成功！采用【{used_model}】旗舰引擎精算，数据已 100% 同步云端。")
                     st.markdown(f"""
                     <div class="model-badge">
@@ -419,7 +435,7 @@ with tab1:
                     st.error(f"推演执行失败: {str(e)}")
 
 # ==============================================================================
-# Tab 2: 结算审计（待结算/已结算均配备一键删除按钮，且显示模型版本）
+# Tab 2: 结算审计（类型安全防崩 + 待结算/已结算均配备删除按钮）
 # ==============================================================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
@@ -431,31 +447,37 @@ with tab2:
         for idx, rec in enumerate(records):
             tag = rec.get("result_tag", "待结算")
             badge = "🔴黑" if tag == "黑" else ("🟢红" if tag == "红" else "⏳待结算")
-            dec = rec.get("decision", {})
-            h_line = rec.get("handicap", -1)
+            dec = rec.get("decision", {}) or {}
+            
+            # 安全解析让球数，彻底杜绝 ValueError
+            h_line = safe_parse_handicap(rec.get("handicap", -1))
             h_str = f"主({h_line:+d})" if h_line != 0 else "常规不让球"
             rec_model = rec.get("model", "gemini-3.8-flash")
+
+            raw_goals = dec.get("pred_goals", [])
+            goals_disp = "/".join(map(str, raw_goals)) if isinstance(raw_goals, list) else str(raw_goals)
 
             with st.expander(f"{badge} {rec.get('match')} [{h_str}] - {rec.get('date')} ({rec_model})", expanded=(not rec.get("settled", False))):
                 st.markdown(f"""
                 - **推演引擎**：`{rec_model}`
-                - **推演预测**：欧盘【{dec.get('pred_eu', 'N/A')}】 | 竞彩让球【{dec.get('pred_handicap', 'N/A')}】 | 双选进球【{'/'.join(map(str, dec.get('pred_goals', [])))}球】
+                - **推演预测**：欧盘【{dec.get('pred_eu', 'N/A')}】 | 竞彩让球【{dec.get('pred_handicap', 'N/A')}】 | 双选进球【{goals_disp}球】
                 - **自洽比分**：首选 `{dec.get('first_score', 'N/A')}` | 防冷 `{dec.get('second_score', 'N/A')}`
                 """)
 
                 # 【未结算卡片】
                 if not rec.get("settled", False):
+                    rec_id = rec.get("id", f"idx_{idx}")
                     c_s1, c_s2 = st.columns(2)
                     with c_s1:
-                        in_h = st.number_input("主队进球", min_value=0, max_value=20, value=0, key=f"h_{rec['id']}")
+                        in_h = st.number_input("主队进球", min_value=0, max_value=20, value=0, key=f"h_{rec_id}")
                     with c_s2:
-                        in_a = st.number_input("客队进球", min_value=0, max_value=20, value=0, key=f"a_{rec['id']}")
+                        in_a = st.number_input("客队进球", min_value=0, max_value=20, value=0, key=f"a_{rec_id}")
 
                     col_op1, col_op2 = st.columns([3, 1])
                     with col_op1:
-                        settle_btn = st.button("⚡ 一键自动核算", key=f"btn_{rec['id']}", type="primary", use_container_width=True)
+                        settle_btn = st.button("⚡ 一键自动核算", key=f"btn_{rec_id}", type="primary", use_container_width=True)
                     with col_op2:
-                        del_pending_btn = st.button("🗑️ 删除该场", key=f"del_p_{rec['id']}", use_container_width=True)
+                        del_pending_btn = st.button("🗑️️ 删除该场", key=f"del_p_{rec_id}", use_container_width=True)
 
                     if settle_btn:
                         diff = in_h - in_a
@@ -490,16 +512,17 @@ with tab2:
                         st.rerun()
 
                     if del_pending_btn:
-                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x["id"] != rec["id"]]
+                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x.get("id") != rec.get("id")]
                         push_to_cloud(st.session_state.db)
                         st.success("✅ 待结算记录已删除！")
                         st.rerun()
 
                 # 【已结算卡片】
                 else:
+                    rec_id = rec.get("id", f"idx_{idx}")
                     st.caption(f"🏁 完场比分：{rec.get('actual_score')} | 结算状态：{tag}")
-                    if st.button("🗑️ 删除该记录", key=f"del_{rec['id']}"):
-                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x["id"] != rec["id"]]
+                    if st.button("🗑️ 删除该记录", key=f"del_{rec_id}"):
+                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x.get("id") != rec.get("id")]
                         push_to_cloud(st.session_state.db)
                         st.rerun()
 
