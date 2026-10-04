@@ -15,25 +15,18 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 深度移动端竖屏优化（防双击放大、触控热区放大、消除横向滚动条、强化决策卡片视觉权重）
+# 深度移动端竖屏优化（留足顶部安全边距，修复遮挡；战绩横向紧凑自适应）
 st.markdown("""
 <style>
     html, body, [class*="css"] {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     .block-container {
-        padding-top: 0.8rem !important;
+        padding-top: 3.8rem !important; /* 预留充足顶部安全区，彻底解决标题被遮挡问题 */
         padding-bottom: 4rem !important;
-        padding-left: 0.75rem !important;
-        padding-right: 0.75rem !important;
+        padding-left: 0.8rem !important;
+        padding-right: 0.8rem !important;
         max-width: 100% !important;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.3rem !important;
-        font-weight: 700 !important;
-    }
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.8rem !important;
     }
     .stButton>button {
         border-radius: 10px !important;
@@ -42,19 +35,29 @@ st.markdown("""
         height: 3.2rem !important;
         box-shadow: 0 2px 6px rgba(0,0,0,0.08);
     }
-    .decision-banner {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        color: #ffffff;
+    /* 手机端专用 4 项战绩横排胶囊看板 */
+    .metric-grid {
+        display: flex;
+        justify-content: space-between;
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
         border-radius: 10px;
-        padding: 14px;
-        margin-bottom: 12px;
+        padding: 10px 8px;
+        margin-bottom: 15px;
     }
-    .status-tag {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: bold;
+    .metric-item {
+        flex: 1;
+        text-align: center;
+    }
+    .metric-title {
+        font-size: 0.72rem;
+        color: #6c757d;
+        margin-bottom: 2px;
+    }
+    .metric-num {
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: #212529;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -172,19 +175,41 @@ if len(settled_list) - last_evolved >= 5 and active_key:
     trigger_evolution(active_key)
 
 # ==============================================================================
-# 4. 侧边栏系统监视与全量热备份
+# 4. 侧边栏系统监视与 4 大接口全透明管控
 # ==============================================================================
 with st.sidebar:
-    st.subheader("⚙️ 核心中枢运行状态")
+    st.subheader("⚙️ 4 大核心接口监控中枢")
+    
+    # 1 & 2. 数据库双密钥监控
     if IS_CLOUD_READY:
-        st.success("🟢 云端数据库：已挂载双向同步")
+        st.success("🟢 数据库 (JSONBin)：双向同步正常")
     else:
-        st.warning("🟠 本地暂存模式（未配置 Secrets）")
+        st.error("🔴 数据库：未连接，请核对 Secrets")
         
-    gemini_input = st.text_input("Gemini API Key（可选覆写）", value=gemini_key_default, type="password")
+    # 3. Gemini 接口监控
+    if gemini_key_default:
+        st.success("🟢 Gemini API：已加载云端密钥")
+    else:
+        st.warning("🟠 Gemini API：未配置")
+        
+    # 4. The Odds API 监控
+    odds_key_default = get_secret("ODDS_API_KEY")
+    if odds_key_default:
+        st.success("🟢 The Odds API：已加载云端密钥")
+    else:
+        st.warning("🟠 The Odds API：未配置")
+
+    st.markdown("---")
+    st.markdown("**🔑 4 大密钥参数查看 / 覆写：**")
+    
+    gemini_input = st.text_input("1. Gemini API Key", value=gemini_key_default, type="password")
     if gemini_input:
         active_key = gemini_input
         
+    odds_input = st.text_input("2. The Odds API Key", value=odds_key_default, type="password")
+    jsonbin_key_input = st.text_input("3. JSONBin Master Key", value=JSONBIN_KEY, type="password")
+    jsonbin_id_input = st.text_input("4. JSONBin Bin ID", value=JSONBIN_BIN_ID)
+
     st.markdown("---")
     st.markdown(f"**🛡️ 黄金军规池 ({len(st.session_state.db.get('rules', []))}/8)**")
     for r in st.session_state.db.get("rules", []):
@@ -213,11 +238,11 @@ with st.sidebar:
     )
 
 # ==============================================================================
-# 5. 手机端主界面：战绩大盘与功能选项卡
+# 5. 手机端主界面：顶部标题与自适应战绩看板
 # ==============================================================================
 st.markdown("### ⚽ 足球微观量化做市决策系统")
 
-# 手机顶部战绩审计看板
+# 统计战绩数据
 total_m = len(st.session_state.db.get("history", []))
 red_m = len([h for h in st.session_state.db.get("history", []) if h.get("result_tag") == "红"])
 black_m = len([h for h in st.session_state.db.get("history", []) if h.get("result_tag") == "黑"])
@@ -225,11 +250,27 @@ void_m = len([h for h in st.session_state.db.get("history", []) if h.get("result
 settled_total = red_m + black_m
 win_rate = f"{(red_m / settled_total * 100):.1f}%" if settled_total > 0 else "0.0%"
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("总推演", f"{total_m}场")
-m2.metric("红单", f"{red_m}")
-m3.metric("黑单", f"{black_m}")
-m4.metric("实战胜率", win_rate)
+# 手机端横向自适应单行战绩胶囊卡片（拒绝竖向挤占空间）
+st.markdown(f"""
+<div class="metric-grid">
+    <div class="metric-item">
+        <div class="metric-title">总推演</div>
+        <div class="metric-num">{total_m}场</div>
+    </div>
+    <div class="metric-item">
+        <div class="metric-title">红单</div>
+        <div class="metric-num" style="color: #28a745;">{red_m}</div>
+    </div>
+    <div class="metric-item">
+        <div class="metric-title">黑单</div>
+        <div class="metric-num" style="color: #dc3545;">{black_m}</div>
+    </div>
+    <div class="metric-item">
+        <div class="metric-title">实战胜率</div>
+        <div class="metric-num" style="color: #007bff;">{win_rate}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 tab1, tab2, tab3 = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘"])
 
@@ -283,7 +324,6 @@ with tab1:
                     errors_summary = "\n".join([f"- {e.get('note')}" for e in st.session_state.db.get("error_bank", [])[-8:]])
                     anomalies_str = "、".join(market_anomalies) if market_anomalies else "无显著异常"
                     
-                    # 满血 OmniQuant Cortex 深度量化提示词系统
                     system_prompt = f"""
 你是一名顶级国际体育对冲基金首席做市策略师、精算师兼赛事量化总监。你的唯一目标是穿透国际做市商（Bookmakers）的微观盘口意图，规避资金诱导陷阱，输出高胜率的竞彩实战赛果决策。
 
@@ -337,7 +377,7 @@ with tab1:
                     st.markdown("---")
                     st.markdown(output_text)
                     
-                    # 全量赛前微观数据 100% 同步持久化写入云端
+                    # 全量赛前微观数据持久化写入云端
                     record = {
                         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -373,7 +413,6 @@ with tab2:
             badge = "🔴" if tag == "黑" else ("🟢" if tag == "红" else ("🟡" if tag == "走水" else "⚪"))
             
             with st.expander(f"{badge} {rec.get('match')} (让球:{rec.get('handicap')}) - [{tag}]"):
-                # 完整回显当时录入的所有赛前微观参数
                 st.caption(f"📅 时间：{rec.get('date')} | 🌤 天气：{rec.get('weather', '未知')}")
                 st.caption(f"🚑 伤停：{rec.get('injury', '无')} | 📊 异动：{rec.get('anomalies', '无')}")
                 st.markdown(rec.get("report", "无详细报告"))
@@ -391,7 +430,6 @@ with tab2:
                     st.session_state.db["history"][real_idx]["result_tag"] = tag_val
                     st.session_state.db["history"][real_idx]["settled"] = (tag_val != "待结算")
                     
-                    # 若判定为黑单，自动将该场次沉淀提炼为错题复盘，加入避坑库
                     if tag_val == "黑":
                         st.session_state.db["error_bank"].append({
                             "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
