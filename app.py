@@ -19,9 +19,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* 彻底解决手机端顶部文字被顶栏/状态栏遮挡的问题 */
+    /* 彻底解决手机端顶部标题文字被顶栏/状态栏遮挡的问题 */
     .block-container {
-        padding-top: 4.2rem !important;
+        padding-top: 4.5rem !important;
         padding-bottom: 3.5rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
@@ -45,11 +45,21 @@ st.markdown("""
     .metric-item { flex: 1; text-align: center; }
     .metric-title { font-size: 0.72rem; color: #6c757d; margin-bottom: 2px; }
     .metric-num { font-size: 1.15rem; font-weight: 700; color: #212529; }
+    .model-badge {
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        color: white;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        margin-bottom: 12px;
+        display: inline-block;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. 8 大核心黄金量化做市军规标准库
+# 2. 8 大核心黄金量化做市军规标准库（全量 8 条一条不少）
 # ==============================================================================
 FULL_8_RULES = [
     "【军规1】平博深盘超低水做热主胜，若必发买方成交过热，坚决防范下盘冷平与让负",
@@ -63,7 +73,7 @@ FULL_8_RULES = [
 ]
 
 # ==============================================================================
-# 3. 密钥深度提取与严格清洗（兼容所有老版配置）
+# 3. 密钥深度提取与严格清洗（兼容所有老版与新版配置）
 # ==============================================================================
 def clean_str(val):
     if not val:
@@ -96,7 +106,7 @@ JSONBIN_HEADERS = {
 }
 
 # ==============================================================================
-# 4. 云端持久化存储中心
+# 4. 云端持久化存储中心（与现有历史数据 100% 兼容）
 # ==============================================================================
 def fetch_from_cloud():
     default_db = {
@@ -198,7 +208,7 @@ if st.button("🔄 立即从云端强制拉取最新数据（多设备同步）"
 tab1, tab2, tab3 = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘"])
 
 # ==============================================================================
-# Tab 1: 推演录入（基于 3.8 引擎·全自动视觉识别）
+# Tab 1: 推演录入（显式标注模型版本 + 全自动视觉识别）
 # ==============================================================================
 with tab1:
     with st.expander("🔑 临时密钥配置与接口测试（选填，默认已读 Secrets）"):
@@ -332,12 +342,15 @@ with tab1:
 
                     genai.configure(api_key=active_key)
                     
+                    # 动态智能路由并捕获真实执行的模型代号
                     response = None
+                    used_model = "未知引擎"
                     for m_cand in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
                         try:
                             mdl = genai.GenerativeModel(m_cand)
                             response = mdl.generate_content([system_prompt, user_prompt] + processed_imgs)
                             if response:
+                                used_model = m_cand
                                 break
                         except Exception:
                             continue
@@ -345,6 +358,7 @@ with tab1:
                     if not response:
                         mdl = genai.GenerativeModel("gemini-1.5-flash")
                         response = mdl.generate_content([system_prompt, user_prompt] + processed_imgs)
+                        used_model = "gemini-1.5-flash"
 
                     report_text = response.text
 
@@ -381,6 +395,7 @@ with tab1:
                         "goals_line": parsed_json.get("detected_goals_line", 2.5),
                         "weather": weather_opt,
                         "anomalies": anomalies_str,
+                        "model": used_model,
                         "report": report_text,
                         "decision": parsed_json,
                         "settled": False,
@@ -391,14 +406,20 @@ with tab1:
                     st.session_state.db.setdefault("history", []).insert(0, new_rec)
                     push_to_cloud(st.session_state.db)
 
-                    st.success("✅ 推演成功！数据已 100% 同步云端。")
+                    # 显式回显当前使用的执行引擎
+                    st.success(f"✅ 推演成功！采用【{used_model}】旗舰引擎精算，数据已 100% 同步云端。")
+                    st.markdown(f"""
+                    <div class="model-badge">
+                        🤖 量化精算引擎：{used_model} &nbsp;|&nbsp; ⏱️ 生成时间：{datetime.now().strftime('%H:%M:%S')} &nbsp;|&nbsp; 状态：双核闭环
+                    </div>
+                    """, unsafe_allow_html=True)
                     st.markdown(report_text)
 
                 except Exception as e:
                     st.error(f"推演执行失败: {str(e)}")
 
 # ==============================================================================
-# Tab 2: 结算审计（待结算/已结算均配备一键删除按钮）
+# Tab 2: 结算审计（待结算/已结算均配备一键删除按钮，且显示模型版本）
 # ==============================================================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
@@ -413,9 +434,11 @@ with tab2:
             dec = rec.get("decision", {})
             h_line = rec.get("handicap", -1)
             h_str = f"主({h_line:+d})" if h_line != 0 else "常规不让球"
+            rec_model = rec.get("model", "gemini-3.8-flash")
 
-            with st.expander(f"{badge} {rec.get('match')} [{h_str}] - {rec.get('date')}", expanded=(not rec.get("settled", False))):
+            with st.expander(f"{badge} {rec.get('match')} [{h_str}] - {rec.get('date')} ({rec_model})", expanded=(not rec.get("settled", False))):
                 st.markdown(f"""
+                - **推演引擎**：`{rec_model}`
                 - **推演预测**：欧盘【{dec.get('pred_eu', 'N/A')}】 | 竞彩让球【{dec.get('pred_handicap', 'N/A')}】 | 双选进球【{'/'.join(map(str, dec.get('pred_goals', [])))}球】
                 - **自洽比分**：首选 `{dec.get('first_score', 'N/A')}` | 防冷 `{dec.get('second_score', 'N/A')}`
                 """)
