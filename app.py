@@ -8,7 +8,7 @@ import requests
 from datetime import datetime
 
 # ==============================================================================
-# 1. 移动端优先视口渲染与流式 CSS 增强
+# 1. 移动端优先视口渲染与流式 CSS 增强（彻底防止顶部文字被遮挡）
 # ==============================================================================
 st.set_page_config(
     page_title="OmniQuant Cortex · 足球微观量化做市决策系统",
@@ -49,7 +49,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. 密钥深度提取与清洗（兼容所有老版配置）
+# 2. 8 大核心黄金量化做市军规标准库
+# ==============================================================================
+FULL_8_RULES = [
+    "【军规1】平博深盘超低水做热主胜，若必发买方成交过热，坚决防范下盘冷平与让负",
+    "【军规2】做市商逆向升水洗盘且亚洲主流机构持续高水阻上，坚定锁定主胜独赢",
+    "【军规3】天气恶劣湿滑积水严重时，技术流攻防受阻，总进球数严控小球区间并剔除大比分",
+    "【军规4】核心组织中场或主力门将单点缺阵，防守体系降级，必须调高对向球队进球期望",
+    "【军规5】欧亚背离与滞后诱盘：平博欧赔大幅下压而皇冠/易胜博亚盘维持浅盘拒不升盘，警惕无量诱上，首防让负",
+    "【军规6】大小球诱大与卡球风控：平博/皇冠大小球初盘虚高挂高水、临场急退盘，亚盘让幅不足，坚决剔除大比分锁定小球区间",
+    "【军规7】必发流动性陷阱：次级联赛小赛事必发资金池匮乏，严禁将散户挂单当主力建仓，强制以平博终盘去抽水纯概率为准",
+    "【军规8】竞彩让平与边际穿盘博弈：强队让一球（-1）临场持续超低水强阻，首选正向穿盘让胜，防冷锁定1球小胜高赔让平"
+]
+
+# ==============================================================================
+# 3. 密钥深度提取与清洗（兼容所有老版配置）
 # ==============================================================================
 def clean_str(val):
     if not val:
@@ -82,17 +96,12 @@ JSONBIN_HEADERS = {
 }
 
 # ==============================================================================
-# 3. 云端持久化存储中心（与现有历史数据 100% 结构兼容）
+# 4. 云端持久化存储中心
 # ==============================================================================
 def fetch_from_cloud():
     default_db = {
         "history": [],
-        "rules": [
-            "【军规1】平博深盘超低水做热主胜，若必发买方成交过热，坚决防范下盘冷平与让负",
-            "【军规2】做市商逆向升水洗盘且亚洲主流机构持续高水阻上，坚定锁定主胜独赢",
-            "【军规3】天气恶劣湿滑积水严重时，技术流攻防受阻，总进球数严控小球区间并剔除大比分",
-            "【军规4】核心组织中场或主力门将单点缺阵，防守体系降级，必须调高对向球队进球期望"
-        ],
+        "rules": FULL_8_RULES.copy(),
         "error_bank": [],
         "last_evolved_count": 0
     }
@@ -105,7 +114,7 @@ def fetch_from_cloud():
             if isinstance(data, dict):
                 merged = {
                     "history": data.get("history", []),
-                    "rules": data.get("rules", default_db["rules"]),
+                    "rules": data.get("rules", FULL_8_RULES),
                     "error_bank": data.get("error_bank", []),
                     "last_evolved_count": data.get("last_evolved_count", 0)
                 }
@@ -127,7 +136,7 @@ if "db" not in st.session_state:
     ok, msg, loaded_db = fetch_from_cloud()
     st.session_state.db = loaded_db
 
-# 手机端轻量压缩，防大图卡死
+# 手机端轻量压缩（避免多张超清大图上传卡死）
 def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -147,7 +156,7 @@ def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     return Image.open(buffered)
 
 # ==============================================================================
-# 4. 主看板数据概览
+# 5. 主看板数据概览
 # ==============================================================================
 st.markdown("### ⚽ 足球微观量化做市决策系统")
 
@@ -259,12 +268,12 @@ with tab1:
         if not uploaded_files:
             st.error("请至少上传一张截图！")
         elif not active_key:
-            st.error("未检测到有效 Gemini API Key！请展开上方临时配置填入，或在 Secrets 中配置。")
+            st.error("未检测到有效 Gemini API Key！请在 Secrets 中配置。")
         else:
             with st.spinner("Gemini 3.8 首席做市商正在看图识人、解析盘口、计算概率并推演自洽比分..."):
                 try:
                     processed_imgs = [compress_image_for_mobile(f) for f in uploaded_files]
-                    rules_str = "\n".join(st.session_state.db.get("rules", []))
+                    rules_str = "\n".join(st.session_state.db.get("rules", FULL_8_RULES))
                     anomalies_str = "、".join(selected_anomalies) if selected_anomalies else "无显著异常"
                     target_match_str = match_input if match_input else "请看图自动识别"
 
@@ -290,7 +299,7 @@ with tab1:
                         "### 📡 做市商精算与去抽水底牌（结合平博 No-Vig 纯概率）\n"
                         "### 🔍 首发阵容战力与核心伤停视觉穿透（识别名单 + xG折损量化）\n"
                         "### 📊 做市商微观盘口穿透（平博/皇冠/易胜博亚盘分歧 + 平博/皇冠大小球）\n"
-                        "### 🛡️️ 竞彩实战风控防冷方案（让球方向风险定性 + 最优对冲策略）\n\n"
+                        "### 🛡️ 竞彩实战风控防冷方案（让球方向风险定性 + 最优对冲策略）\n\n"
                         "---\n"
                         "【系统数据结构化回传要求】\n"
                         f"在研报末尾，必须严格附加一个用于程序自动解析落库的 JSON 块（用 {TICKS}json 与 {TICKS} 包裹），格式如下：\n"
@@ -457,10 +466,17 @@ with tab2:
                         st.rerun()
 
 # ==============================================================================
-# Tab 3: 错题复盘与自进化避坑库
+# Tab 3: 错题复盘与自进化避坑库（包含一键补齐 8 大军规）
 # ==============================================================================
 with tab3:
     st.markdown("**🧠 错题复盘与自进化避坑库**")
+
+    # 一键补齐/重置完整 8 大军规按钮
+    if st.button("🔄 一键补齐/重置完整 8 大黄金量化军规", use_container_width=True):
+        st.session_state.db["rules"] = FULL_8_RULES.copy()
+        push_to_cloud(st.session_state.db)
+        st.success("✅ 8 条黄金量化军规已全部补齐并永久同步至云端！")
+        st.rerun()
 
     err_list = st.session_state.db.get("error_bank", [])
     st.markdown(f"累计负样本记录：**{len(err_list)} 条**")
@@ -502,7 +518,7 @@ with tab3:
 
     st.markdown("---")
     st.markdown("#### 📜 当前生效的实战黄金军规池")
-    rules = st.session_state.db.get("rules", [])
+    rules = st.session_state.db.get("rules", FULL_8_RULES)
     for idx, r in enumerate(rules):
         col_r1, col_r2 = st.columns([6, 1])
         with col_r1:
