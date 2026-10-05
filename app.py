@@ -84,7 +84,7 @@ def clean_str(val):
     return s
 
 def safe_parse_handicap(val):
-    """安全解析让球数，防止字符串或浮点数引发格式化崩溃"""
+    """安全解析让球数，防止字符串或非整型数据引发格式化崩溃"""
     if val is None:
         return 0
     try:
@@ -297,7 +297,7 @@ with tab1:
         elif not active_key:
             st.error("未检测到有效 Gemini API Key！请在 Secrets 中配置。")
         else:
-            with st.spinner("AI 首席做市商正在看图识人、解析盘口、计算概率并推演自洽比分..."):
+            with st.spinner("Gemini 3.8 首席做市商正在看图识人、解析盘口、计算概率并推演自洽比分..."):
                 try:
                     processed_imgs = [compress_image_for_mobile(f) for f in uploaded_files]
                     rules_str = "\n".join(st.session_state.db.get("rules", FULL_8_RULES))
@@ -435,7 +435,7 @@ with tab1:
                     st.error(f"推演执行失败: {str(e)}")
 
 # ==============================================================================
-# Tab 2: 结算审计（类型安全防崩 + 待结算/已结算均配备删除按钮）
+# Tab 2: 结算审计（类型安全防崩 + 待结算/已结算均配备独立删除按钮）
 # ==============================================================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
@@ -477,7 +477,7 @@ with tab2:
                     with col_op1:
                         settle_btn = st.button("⚡ 一键自动核算", key=f"btn_{rec_id}", type="primary", use_container_width=True)
                     with col_op2:
-                        del_pending_btn = st.button("🗑️️ 删除该场", key=f"del_p_{rec_id}", use_container_width=True)
+                        del_pending_btn = st.button("🗑 删除该场", key=f"del_p_{rec_id}", use_container_width=True)
 
                     if settle_btn:
                         diff = in_h - in_a
