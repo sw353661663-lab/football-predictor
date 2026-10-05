@@ -8,7 +8,7 @@ import requests
 from datetime import datetime
 
 # ==============================================================================
-# 1. 移动端优先视口渲染与流式 CSS 增强（彻底防止顶部文字被遮挡）
+# 1. 移动端优先视口渲染与流式 CSS 增强
 # ==============================================================================
 st.set_page_config(
     page_title="OmniQuant Cortex · 足球微观量化做市决策系统",
@@ -19,7 +19,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* 彻底解决手机端顶部标题文字被顶栏/状态栏遮挡的问题 */
     .block-container {
         padding-top: 4.5rem !important;
         padding-bottom: 3.5rem !important;
@@ -38,13 +37,13 @@ st.markdown("""
         background: #f8f9fa;
         border: 1px solid #e9ecef;
         border-radius: 10px;
-        padding: 10px 8px;
+        padding: 10px 6px;
         margin-bottom: 12px;
         margin-top: 6px;
     }
     .metric-item { flex: 1; text-align: center; }
-    .metric-title { font-size: 0.72rem; color: #6c757d; margin-bottom: 2px; }
-    .metric-num { font-size: 1.15rem; font-weight: 700; color: #212529; }
+    .metric-title { font-size: 0.70rem; color: #6c757d; margin-bottom: 2px; }
+    .metric-num { font-size: 1.05rem; font-weight: 700; color: #212529; }
     .model-badge {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         color: white;
@@ -55,11 +54,13 @@ st.markdown("""
         margin-bottom: 12px;
         display: inline-block;
     }
+    .tag-red { color: #28a745; font-weight: bold; }
+    .tag-black { color: #dc3545; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. 8 大核心黄金量化做市军规标准库（全量 8 条一条不少）
+# 2. 8 大核心黄金量化做市军规标准库
 # ==============================================================================
 FULL_8_RULES = [
     "【军规1】平博深盘超低水做热主胜，若必发买方成交过热，坚决防范下盘冷平与让负",
@@ -73,7 +74,7 @@ FULL_8_RULES = [
 ]
 
 # ==============================================================================
-# 3. 密钥深度提取与严格清洗（兼容所有老版与新版配置）
+# 3. 密钥深度提取与安全格式转换
 # ==============================================================================
 def clean_str(val):
     if not val:
@@ -84,7 +85,6 @@ def clean_str(val):
     return s
 
 def safe_parse_handicap(val):
-    """安全解析让球数，防止字符串或非整型数据引发格式化崩溃"""
     if val is None:
         return 0
     try:
@@ -99,6 +99,21 @@ def safe_parse_handicap(val):
         return 0
     except Exception:
         return 0
+
+def safe_parse_goals(val):
+    """解析预测进球数，兼容列表或逗号分隔格式"""
+    if isinstance(val, list):
+        res = []
+        for x in val:
+            try:
+                res.append(int(x))
+            except Exception:
+                pass
+        return res
+    if isinstance(val, str):
+        nums = re.findall(r'\d+', val)
+        return [int(n) for n in nums]
+    return []
 
 def get_secret(keys, default=""):
     try:
@@ -123,7 +138,7 @@ JSONBIN_HEADERS = {
 }
 
 # ==============================================================================
-# 4. 云端持久化存储中心（与现有历史数据 100% 兼容）
+# 4. 云端持久化存储中心
 # ==============================================================================
 def fetch_from_cloud():
     default_db = {
@@ -163,7 +178,6 @@ if "db" not in st.session_state:
     ok, msg, loaded_db = fetch_from_cloud()
     st.session_state.db = loaded_db
 
-# 手机端轻量压缩（避免多张超清大图上传导致网络超时或前端卡死）
 def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -183,34 +197,40 @@ def compress_image_for_mobile(uploaded_file, max_size=1600, quality=85):
     return Image.open(buffered)
 
 # ==============================================================================
-# 5. 主看板数据概览
+# 5. 主看板三维透视统计概览
 # ==============================================================================
 st.markdown("### ⚽ 足球微观量化做市决策系统")
 
 hist = st.session_state.db.get("history", [])
-total_m = len(hist)
-red_m = len([h for h in hist if h.get("result_tag") == "红"])
-black_m = len([h for h in hist if h.get("result_tag") == "黑"])
-settled_total = red_m + black_m
-win_rate = f"{(red_m / settled_total * 100):.1f}%" if settled_total > 0 else "0.0%"
+settled_records = [h for h in hist if h.get("settled", False)]
+total_settled = len(settled_records)
+
+# 独立核算三大玩法的胜率
+eu_wins = len([h for h in settled_records if h.get("eu_tag") == "红"])
+h_wins = len([h for h in settled_records if h.get("h_tag") == "红" or h.get("result_tag") == "红"])
+goals_wins = len([h for h in settled_records if h.get("goals_tag") == "红"])
+
+rate_eu = f"{(eu_wins / total_settled * 100):.1f}%" if total_settled > 0 else "0.0%"
+rate_h = f"{(h_wins / total_settled * 100):.1f}%" if total_settled > 0 else "0.0%"
+rate_goals = f"{(goals_wins / total_settled * 100):.1f}%" if total_settled > 0 else "0.0%"
 
 st.markdown(f"""
 <div class="metric-grid">
     <div class="metric-item">
         <div class="metric-title">总推演</div>
-        <div class="metric-num">{total_m}场</div>
+        <div class="metric-num">{len(hist)}场</div>
     </div>
     <div class="metric-item">
-        <div class="metric-title">红单</div>
-        <div class="metric-num" style="color: #28a745;">{red_m}</div>
+        <div class="metric-title">欧盘胜率</div>
+        <div class="metric-num" style="color: #28a745;">{rate_eu}</div>
     </div>
     <div class="metric-item">
-        <div class="metric-title">黑单</div>
-        <div class="metric-num" style="color: #dc3545;">{black_m}</div>
+        <div class="metric-title">让球胜率</div>
+        <div class="metric-num" style="color: #007bff;">{rate_h}</div>
     </div>
     <div class="metric-item">
-        <div class="metric-title">实战胜率</div>
-        <div class="metric-num" style="color: #007bff;">{win_rate}</div>
+        <div class="metric-title">进球数胜率</div>
+        <div class="metric-num" style="color: #fd7e14;">{rate_goals}</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -225,7 +245,7 @@ if st.button("🔄 立即从云端强制拉取最新数据（多设备同步）"
 tab1, tab2, tab3 = st.tabs(["🚀 推演录入", "📊 结算审计", "🧠 错题复盘"])
 
 # ==============================================================================
-# Tab 1: 推演录入（显式标注模型版本 + 全自动视觉识别）
+# Tab 1: 推演录入（基于 3.8 引擎·显式标注）
 # ==============================================================================
 with tab1:
     with st.expander("🔑 临时密钥配置与接口测试（选填，默认已读 Secrets）"):
@@ -417,6 +437,9 @@ with tab1:
                         "decision": parsed_json,
                         "settled": False,
                         "actual_score": "",
+                        "eu_tag": "待结算",
+                        "h_tag": "待结算",
+                        "goals_tag": "待结算",
                         "result_tag": "待结算"
                     }
 
@@ -426,7 +449,7 @@ with tab1:
                     st.success(f"✅ 推演成功！采用【{used_model}】旗舰引擎精算，数据已 100% 同步云端。")
                     st.markdown(f"""
                     <div class="model-badge">
-                        🤖 量化精算引擎：{used_model} &nbsp;|&nbsp; ⏱️ 生成时间：{datetime.now().strftime('%H:%M:%S')} &nbsp;|&nbsp; 状态：双核闭环
+                        🤖 量化精算引擎：{used_model} &nbsp;|&nbsp; ⏱️ 生成时间：{datetime.now().strftime('%H:%M:%S')} &nbsp;|&nbsp; 状态：三维量化闭环
                     </div>
                     """, unsafe_allow_html=True)
                     st.markdown(report_text)
@@ -435,7 +458,7 @@ with tab1:
                     st.error(f"推演执行失败: {str(e)}")
 
 # ==============================================================================
-# Tab 2: 结算审计（类型安全防崩 + 待结算/已结算均配备独立删除按钮）
+# Tab 2: 结算审计（支持欧盘/让球/进球数 三大维度独立结算判定）
 # ==============================================================================
 with tab2:
     st.markdown("**📋 历史推演对阵与自动比分结算**")
@@ -445,28 +468,39 @@ with tab2:
         st.info("暂无历史推演对阵记录。")
     else:
         for idx, rec in enumerate(records):
-            tag = rec.get("result_tag", "待结算")
-            badge = "🔴黑" if tag == "黑" else ("🟢红" if tag == "红" else "⏳待结算")
             dec = rec.get("decision", {}) or {}
-            
-            # 安全解析让球数，彻底杜绝 ValueError
             h_line = safe_parse_handicap(rec.get("handicap", -1))
             h_str = f"主({h_line:+d})" if h_line != 0 else "常规不让球"
             rec_model = rec.get("model", "gemini-3.8-flash")
 
-            raw_goals = dec.get("pred_goals", [])
-            goals_disp = "/".join(map(str, raw_goals)) if isinstance(raw_goals, list) else str(raw_goals)
+            pred_eu = str(dec.get("pred_eu", "N/A")).strip()
+            pred_h = str(dec.get("pred_handicap", "N/A")).strip()
+            pred_goals = safe_parse_goals(dec.get("pred_goals", []))
+            goals_disp = "/".join(map(str, pred_goals)) if pred_goals else str(dec.get("pred_goals", "N/A"))
 
-            with st.expander(f"{badge} {rec.get('match')} [{h_str}] - {rec.get('date')} ({rec_model})", expanded=(not rec.get("settled", False))):
+            # 独立红黑标识
+            tag_eu = rec.get("eu_tag", "待结算")
+            tag_h = rec.get("h_tag", rec.get("result_tag", "待结算"))
+            tag_g = rec.get("goals_tag", "待结算")
+
+            if rec.get("settled", False):
+                badge_title = f"让球:{tag_h} | 欧盘:{tag_eu} | 进球:{tag_g}"
+            else:
+                badge_title = "⏳待结算"
+
+            with st.expander(f"[{badge_title}] {rec.get('match')} [{h_str}] - {rec.get('date')}", expanded=(not rec.get("settled", False))):
                 st.markdown(f"""
                 - **推演引擎**：`{rec_model}`
-                - **推演预测**：欧盘【{dec.get('pred_eu', 'N/A')}】 | 竞彩让球【{dec.get('pred_handicap', 'N/A')}】 | 双选进球【{goals_disp}球】
+                - **欧盘预测**：【{pred_eu}】 &nbsp;|&nbsp; 状态：<span class="{'tag-red' if tag_eu=='红' else ('tag-black' if tag_eu=='黑' else '')}">{tag_eu}</span>
+                - **让球预测**：【{pred_h}】 &nbsp;|&nbsp; 状态：<span class="{'tag-red' if tag_h=='红' else ('tag-black' if tag_h=='黑' else '')}">{tag_h}</span>
+                - **进球预测**：【{goals_disp}球】 &nbsp;|&nbsp; 状态：<span class="{'tag-red' if tag_g=='红' else ('tag-black' if tag_g=='黑' else '')}">{tag_g}</span>
                 - **自洽比分**：首选 `{dec.get('first_score', 'N/A')}` | 防冷 `{dec.get('second_score', 'N/A')}`
-                """)
+                """, unsafe_allow_html=True)
+
+                rec_id = rec.get("id", f"idx_{idx}")
 
                 # 【未结算卡片】
                 if not rec.get("settled", False):
-                    rec_id = rec.get("id", f"idx_{idx}")
                     c_s1, c_s2 = st.columns(2)
                     with c_s1:
                         in_h = st.number_input("主队进球", min_value=0, max_value=20, value=0, key=f"h_{rec_id}")
@@ -475,7 +509,7 @@ with tab2:
 
                     col_op1, col_op2 = st.columns([3, 1])
                     with col_op1:
-                        settle_btn = st.button("⚡ 一键自动核算", key=f"btn_{rec_id}", type="primary", use_container_width=True)
+                        settle_btn = st.button("⚡ 一键自动核算（三维独立判定）", key=f"btn_{rec_id}", type="primary", use_container_width=True)
                     with col_op2:
                         del_pending_btn = st.button("🗑 删除该场", key=f"del_p_{rec_id}", use_container_width=True)
 
@@ -484,6 +518,11 @@ with tab2:
                         tot_goals = in_h + in_a
                         act_score = f"{in_h}-{in_a}"
 
+                        # 1. 欧盘真实判定
+                        act_eu = "胜" if diff > 0 else ("平" if diff == 0 else "负")
+                        is_eu_win = (pred_eu == act_eu)
+
+                        # 2. 让球真实判定
                         if h_line == 0:
                             act_h = "胜" if diff > 0 else ("平" if diff == 0 else "负")
                         else:
@@ -493,46 +532,55 @@ with tab2:
                                 act_h = "让平"
                             else:
                                 act_h = "让负"
+                        is_h_win = (pred_h == act_h)
 
-                        pred_h = dec.get("pred_handicap", "")
-                        is_win = (pred_h == act_h)
+                        # 3. 进球数真实判定
+                        is_goals_win = (tot_goals in pred_goals) if pred_goals else False
 
                         rec["actual_score"] = act_score
                         rec["settled"] = True
-                        rec["result_tag"] = "红" if is_win else "黑"
+                        rec["eu_tag"] = "红" if is_eu_win else "黑"
+                        rec["h_tag"] = "红" if is_h_win else "黑"
+                        rec["goals_tag"] = "红" if is_goals_win else "黑"
+                        rec["result_tag"] = "红" if is_h_win else "黑"
 
-                        if not is_win:
+                        if not is_h_win:
                             st.session_state.db.setdefault("error_bank", []).append({
                                 "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                "note": f"【实战失误】{rec.get('match')} (盘口:{h_str}) 完场 {act_score} -> 打出【{act_h}】，预测【{pred_h}】黑单"
+                                "note": f"【实战失误】{rec.get('match')} (盘口:{h_str}) 完场 {act_score} -> 让球打出【{act_h}】，预测【{pred_h}】黑单"
                             })
 
                         push_to_cloud(st.session_state.db)
-                        st.success(f"结算完成！打出【{act_h}】({'🟢红单' if is_win else '🔴黑单'}), 总进球 {tot_goals} 球")
+                        st.success(f"核算完成！完场 {act_score}：欧盘打出【{act_eu}】({'🟢红' if is_eu_win else '🔴黑'})，让球打出【{act_h}】({'🟢红' if is_h_win else '🔴黑'})，总进球【{tot_goals}球】({'🟢红' if is_goals_win else '🔴黑'})")
                         st.rerun()
 
                     if del_pending_btn:
                         st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x.get("id") != rec.get("id")]
                         push_to_cloud(st.session_state.db)
-                        st.success("✅ 待结算记录已删除！")
+                        st.success("✅ 记录已删除！")
                         st.rerun()
 
                 # 【已结算卡片】
                 else:
-                    rec_id = rec.get("id", f"idx_{idx}")
-                    st.caption(f"🏁 完场比分：{rec.get('actual_score')} | 结算状态：{tag}")
-                    if st.button("🗑️ 删除该记录", key=f"del_{rec_id}"):
-                        st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x.get("id") != rec.get("id")]
-                        push_to_cloud(st.session_state.db)
-                        st.rerun()
+                    st.caption(f"🏁 完场比分：{rec.get('actual_score')}")
+                    col_b1, col_b2 = st.columns([3, 1])
+                    with col_b1:
+                        if st.button("🔄 重新核算该场比分", key=f"reset_{rec_id}"):
+                            rec["settled"] = False
+                            push_to_cloud(st.session_state.db)
+                            st.rerun()
+                    with col_b2:
+                        if st.button("🗑️ 删除记录", key=f"del_{rec_id}"):
+                            st.session_state.db["history"] = [x for x in st.session_state.db["history"] if x.get("id") != rec.get("id")]
+                            push_to_cloud(st.session_state.db)
+                            st.rerun()
 
 # ==============================================================================
-# Tab 3: 错题复盘与自进化避坑库（包含一键补齐 8 大军规与规则独立删除）
+# Tab 3: 错题复盘与自进化避坑库
 # ==============================================================================
 with tab3:
     st.markdown("**🧠 错题复盘与自进化避坑库**")
 
-    # 一键补齐/重置完整 8 大军规按钮
     if st.button("🔄 一键补齐/重置完整 8 大黄金量化军规", use_container_width=True):
         st.session_state.db["rules"] = FULL_8_RULES.copy()
         push_to_cloud(st.session_state.db)
