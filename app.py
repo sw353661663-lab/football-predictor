@@ -10,7 +10,7 @@ import requests
 from PIL import Image
 
 # ==============================================================================
-# 1. 移动端优先高定页面配置 & CSS
+# 1. 移动端优先高定页面配置 & CSS (已彻底修复顶栏遮挡问题)
 # ==============================================================================
 st.set_page_config(
     page_title="足球量化做市工作站",
@@ -21,12 +21,22 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* 核心修复：顶部留出 3.6rem 距离，彻底避开 Streamlit 云端顶栏遮挡 */
     .block-container {
-        padding-top: 0.6rem;
+        padding-top: 3.6rem !important;
         padding-bottom: 2rem;
         padding-left: 0.8rem;
         padding-right: 0.8rem;
         max-width: 900px;
+    }
+    /* 优化手机端 Tab 切换栏样式，大字、醒目、易点击 */
+    div[data-testid="stTabs"] {
+        margin-bottom: 1rem;
+    }
+    button[data-baseweb="tab"] {
+        font-size: 0.95rem !important;
+        font-weight: 700 !important;
+        padding: 8px 10px !important;
     }
     .metric-card {
         background: linear-gradient(135deg, #1e293b, #0f172a);
@@ -141,7 +151,7 @@ def update_db(db):
         json.dump(db, f, ensure_ascii=False, indent=2)
 
 # ==============================================================================
-# 4. Gemini 核心驱动：智能图像压缩 + 超长超时（彻底解决 Timed out）
+# 4. Gemini 核心驱动：智能图像压缩 + 超长超时（150秒）
 # ==============================================================================
 def call_quant_model_auto(api_key, images, manual_override, notes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
@@ -202,17 +212,15 @@ P_pure = (1/odds) / Margin。
 
     parts = [{"text": system_rules + "\n" + prompt}]
     
-    # 智能图片轻量化压缩（核心优化：体积缩小 80%，彻底防止上传超时）
+    # 智能轻量化压缩
     for img in images:
         img_copy = img.copy()
-        # 限制最大边长不超过 1200 像素，既保障字体锐利又极大减小体积
         max_dim = 1200
         if max(img_copy.size) > max_dim:
             scale = max_dim / max(img_copy.size)
             new_size = (int(img_copy.size[0] * scale), int(img_copy.size[1] * scale))
             img_copy = img_copy.resize(new_size, Image.Resampling.LANCZOS)
         
-        # 转换为 RGB 格式并压缩为 JPEG
         if img_copy.mode != "RGB":
             img_copy = img_copy.convert("RGB")
             
@@ -236,7 +244,6 @@ P_pure = (1/odds) / Margin。
         }
     }
 
-    # 超时放宽至 150 秒（原为 60 秒）
     resp = requests.post(url, json=payload, timeout=150)
     if resp.status_code != 200:
         raise Exception(f"API 请求失败 [{resp.status_code}]: {resp.text}")
@@ -246,28 +253,28 @@ P_pure = (1/odds) / Margin。
     return text
 
 # ==============================================================================
-# 5. Streamlit 界面交互
+# 5. Streamlit 页面交互（精简标签名称，彻底露出）
 # ==============================================================================
 
+# 使用短小精悍的标签名称，确保手机屏幕水平宽度完全装下
 tab_predict, tab_history, tab_profiles = st.tabs([
-    "⚡ 纯传图极速工作台", 
-    "📋 历史结算与复盘", 
-    "🧬 30大赛事基因底牌"
+    "⚡ 极速推演", 
+    "📋 历史复盘", 
+    "🧬 联赛底牌"
 ])
 
 # ------------------------------------------------------------------------------
 # TAB 1: 纯传图极速推演工作台
 # ------------------------------------------------------------------------------
 with tab_predict:
-    st.markdown("### ⚽ 足球量化做市推演 · 极速传图模式")
+    st.markdown("#### ⚽ 足球量化做市推演 · 极速传图模式")
     
     with st.expander("🔑 系统配置与 API 密钥", expanded=False):
         api_key = st.text_input("Google AI Studio API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
         st.caption("可在服务器环境变量配置 GEMINI_API_KEY，配置后无需每次输入。")
 
-    # 核心上传区（放在首屏最显眼位置）
     uploaded_files = st.file_uploader(
-        "📸 手机传图（建议上传 2~4 张关键截图：平博/皇冠指数、首发阵容等）", 
+        "📸 上传截图（平博/皇冠指数、首发阵容等）", 
         type=["png", "jpg", "jpeg"], 
         accept_multiple_files=True
     )
@@ -280,11 +287,9 @@ with tab_predict:
             with cols_img[idx % 4]:
                 st.image(img, caption=f"图 {idx+1}", use_container_width=True)
 
-    notes = st.text_input("📝 简要备注（选填，如：欧冠首回合、客队轮休）", placeholder="可留空，AI 会自动从截图中分析")
+    notes = st.text_input("📝 简要备注（选填）", placeholder="可留空，AI 自动从截图中分析")
 
-    # 手动微调收纳进折叠栏，平时无需理会
-    with st.expander("🛠️ 手动微调 / 备用指定输入（选填，平时无需打开）", expanded=False):
-        st.caption("如果截图模糊或没有截图，才在此处手动指定：")
+    with st.expander("🛠️ 手动微调 / 备用指定输入（选填）", expanded=False):
         col_m1, col_m2 = st.columns(2)
         with col_m1:
             manual_league = st.selectbox("手动指定联赛", ["自动从截图识别"] + list(LEAGUE_PROFILES.keys()))
@@ -413,7 +418,7 @@ with tab_predict:
 # TAB 2: 历史结算与复盘审计
 # ------------------------------------------------------------------------------
 with tab_history:
-    st.markdown("### 📋 历史赛事推演自动结算与审计")
+    st.markdown("#### 📋 历史赛事推演自动结算与审计")
     records = load_db()
     
     if not records:
@@ -461,18 +466,17 @@ with tab_history:
 # TAB 3: 30 大赛事基因底牌速查
 # ------------------------------------------------------------------------------
 with tab_profiles:
-    st.markdown("### 🧬 69,368 场大数定律：30 大赛事基因速查")
+    st.markdown("#### 🧬 69,368 场大数定律：30 大赛事基因速查")
     league_rows = []
     for lg_name, p in LEAGUE_PROFILES.items():
         league_rows.append({
-            "赛事分类": p['archetype'],
-            "赛事名称": lg_name,
-            "场均进球": f"{p['avg_goals']} 球",
-            "大球率(>2.5)": f"{round(p['over25']*100, 1)}%",
+            "分类": p['archetype'],
+            "联赛": lg_name,
+            "场均进球": f"{p['avg_goals']}球",
+            "大球率": f"{round(p['over25']*100, 1)}%",
             "平局率": f"{round(p['draw_rate']*100, 1)}%",
-            "双方破门": f"{round(p['btts']*100, 1)}%",
-            "双选进球数": p['preferred_goals_pair'],
-            "高频比分": " / ".join(p['top_scores'][:4]),
-            "核心做市特征": p['risk_tag']
+            "双选进球": p['preferred_goals_pair'],
+            "高频比分": " / ".join(p['top_scores'][:3]),
+            "核心特征": p['risk_tag']
         })
     st.dataframe(pd.DataFrame(league_rows), use_container_width=True, hide_index=True)
