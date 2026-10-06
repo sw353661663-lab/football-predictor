@@ -118,25 +118,7 @@ LEAGUE_PROFILES = {
 }
 
 # ==============================================================================
-# 3. 本地做市商精算引擎（No-Vig 纯概率数学公式）
-# ==============================================================================
-def calculate_novig(h, d, a):
-    try:
-        h, d, a = float(h), float(d), float(a)
-        if h <= 1.0 or d <= 1.0 or a <= 1.0:
-            return None
-        margin = (1.0 / h) + (1.0 / d) + (1.0 / a)
-        return {
-            "p_h": round(((1.0 / h) / margin) * 100, 2),
-            "p_d": round(((1.0 / d) / margin) * 100, 2),
-            "p_a": round(((1.0 / a) / margin) * 100, 2),
-            "vig": round((margin - 1.0) * 100, 2)
-        }
-    except Exception:
-        return None
-
-# ==============================================================================
-# 4. 数据持久化
+# 3. 辅助计算与持久化
 # ==============================================================================
 DB_FILE = "match_predictions_db.json"
 def load_db():
@@ -159,7 +141,7 @@ def update_db(db):
         json.dump(db, f, ensure_ascii=False, indent=2)
 
 # ==============================================================================
-# 5. Gemini 3.8 Flash 全模态识图 + 做市推演核心驱动
+# 4. Gemini 核心驱动：智能图像压缩 + 超长超时（彻底解决 Timed out）
 # ==============================================================================
 def call_quant_model_auto(api_key, images, manual_override, notes):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
@@ -220,10 +202,24 @@ P_pure = (1/odds) / Margin。
 
     parts = [{"text": system_rules + "\n" + prompt}]
     
+    # 智能图片轻量化压缩（核心优化：体积缩小 80%，彻底防止上传超时）
     for img in images:
+        img_copy = img.copy()
+        # 限制最大边长不超过 1200 像素，既保障字体锐利又极大减小体积
+        max_dim = 1200
+        if max(img_copy.size) > max_dim:
+            scale = max_dim / max(img_copy.size)
+            new_size = (int(img_copy.size[0] * scale), int(img_copy.size[1] * scale))
+            img_copy = img_copy.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # 转换为 RGB 格式并压缩为 JPEG
+        if img_copy.mode != "RGB":
+            img_copy = img_copy.convert("RGB")
+            
         buffered = io.BytesIO()
-        img.save(buffered, format="JPEG")
+        img_copy.save(buffered, format="JPEG", quality=82, optimize=True)
         img_str = base64.b64encode(buffered.getvalue()).decode()
+        
         parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
@@ -240,7 +236,8 @@ P_pure = (1/odds) / Margin。
         }
     }
 
-    resp = requests.post(url, json=payload, timeout=60)
+    # 超时放宽至 150 秒（原为 60 秒）
+    resp = requests.post(url, json=payload, timeout=150)
     if resp.status_code != 200:
         raise Exception(f"API 请求失败 [{resp.status_code}]: {resp.text}")
     
@@ -249,7 +246,7 @@ P_pure = (1/odds) / Margin。
     return text
 
 # ==============================================================================
-# 6. Streamlit 界面交互
+# 5. Streamlit 界面交互
 # ==============================================================================
 
 tab_predict, tab_history, tab_profiles = st.tabs([
@@ -270,7 +267,7 @@ with tab_predict:
 
     # 核心上传区（放在首屏最显眼位置）
     uploaded_files = st.file_uploader(
-        "📸 手机传图（平博、皇冠、首发阵容、必发等截图直接多选传上即可）", 
+        "📸 手机传图（建议上传 2~4 张关键截图：平博/皇冠指数、首发阵容等）", 
         type=["png", "jpg", "jpeg"], 
         accept_multiple_files=True
     )
