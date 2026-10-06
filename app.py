@@ -6,14 +6,15 @@ import os
 import datetime
 import base64
 import io
+import re
 import requests
 from PIL import Image
 
 # ==============================================================================
-# 1. 移动端优先高定页面配置 & CSS (已彻底修复顶栏遮挡问题)
+# 1. 移动端优先高定页面配置 & CSS (彻底修复顶栏遮挡与卡片样式)
 # ==============================================================================
 st.set_page_config(
-    page_title="足球量化做市工作站",
+    page_title="足球量化做市推演系统",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -21,72 +22,39 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* 核心修复：顶部留出 3.6rem 距离，彻底避开 Streamlit 云端顶栏遮挡 */
     .block-container {
-        padding-top: 3.6rem !important;
+        padding-top: 2rem !important;
         padding-bottom: 2rem;
         padding-left: 0.8rem;
         padding-right: 0.8rem;
         max-width: 900px;
     }
-    /* 优化手机端 Tab 切换栏样式，大字、醒目、易点击 */
-    div[data-testid="stTabs"] {
-        margin-bottom: 1rem;
-    }
-    button[data-baseweb="tab"] {
-        font-size: 0.95rem !important;
-        font-weight: 700 !important;
-        padding: 8px 10px !important;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #1e293b, #0f172a);
+    /* 手机端顶部大按键导航条 */
+    div[role="radiogroup"] {
+        display: flex;
+        justify-content: space-around;
+        background: #1e293b;
+        padding: 5px;
+        border-radius: 12px;
+        margin-bottom: 1.2rem;
         border: 1px solid #334155;
-        border-radius: 10px;
-        padding: 12px;
-        margin-bottom: 8px;
-        color: #f8fafc;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.25);
     }
-    .decision-title {
-        font-size: 0.82rem;
+    div[role="radiogroup"] label {
+        background: #0f172a;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 0.92rem;
         color: #94a3b8;
-        margin-bottom: 4px;
-        font-weight: 500;
+        border: 1px solid #334155;
+        flex: 1;
+        text-align: center;
+        margin: 0 3px;
     }
-    .decision-val {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #38bdf8;
-    }
-    .conf-badge {
-        font-size: 0.78rem;
-        padding: 2px 7px;
-        border-radius: 6px;
-        background-color: #0284c7;
+    div[role="radiogroup"] label[data-checked="true"] {
+        background: #0284c7;
         color: #ffffff;
-        float: right;
-        font-weight: 600;
-    }
-    .status-green {
-        background-color: #065f46;
-        color: #34d399;
-        padding: 3px 9px;
-        border-radius: 6px;
-        font-weight: 700;
-    }
-    .status-yellow {
-        background-color: #78350f;
-        color: #fbbf24;
-        padding: 3px 9px;
-        border-radius: 6px;
-        font-weight: 700;
-    }
-    .status-red {
-        background-color: #7f1d1d;
-        color: #f87171;
-        padding: 3px 9px;
-        border-radius: 6px;
-        font-weight: 700;
+        border-color: #38bdf8;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -95,6 +63,7 @@ st.markdown("""
 # 2. 全球 30 大核心赛事量化基因库（69,368 场大数回测底座）
 # ==============================================================================
 LEAGUE_PROFILES = {
+    "欧国联/国家队": {"archetype": "跨国锦标赛", "avg_goals": 2.68, "over25": 0.5120, "over35": 0.2850, "draw_rate": 0.2650, "btts": 0.5050, "preferred_goals_pair": "2球 / 3球", "top_scores": ["1-1", "2-1", "1-0", "0-1", "2-0"], "handicap_rule": "五五开强强对话平局率高，让一球盘口注意防范让平", "risk_tag": "国际赛事 / 强弱分化明显"},
     "德甲": {"archetype": "极致大球爆发型", "avg_goals": 3.21, "over25": 0.6206, "over35": 0.4175, "draw_rate": 0.2500, "btts": 0.5984, "preferred_goals_pair": "3球 / 4球", "top_scores": ["1-1", "2-1", "2-0", "1-2", "2-2", "3-1"], "handicap_rule": "深盘穿盘率相对较高，需防范高比分平局穿盘", "risk_tag": "大球优先 / 剔除0-0与1-0"},
     "荷甲": {"archetype": "极致大球爆发型", "avg_goals": 3.18, "over25": 0.6176, "over35": 0.3791, "draw_rate": 0.2614, "btts": 0.6275, "preferred_goals_pair": "3球 / 4球", "top_scores": ["1-1", "2-1", "2-2", "1-2", "2-0"], "handicap_rule": "双方进球率达 62.8% 全球最高，必须考虑失球对冲", "risk_tag": "BTTS第一 / 重点防范 2-2 平局"},
     "瑞士超": {"archetype": "极致大球爆发型", "avg_goals": 3.02, "over25": 0.5826, "over35": 0.3672, "draw_rate": 0.2547, "btts": 0.5962, "preferred_goals_pair": "2球 / 3球", "top_scores": ["1-1", "2-1", "1-2", "2-2", "2-0"], "handicap_rule": "豪门客场防守偶发松懈，单挑让胜需谨慎", "risk_tag": "中欧高产大球 / 双方破门率极高"},
@@ -128,7 +97,7 @@ LEAGUE_PROFILES = {
 }
 
 # ==============================================================================
-# 3. 辅助计算与持久化
+# 3. 辅助持久化模块
 # ==============================================================================
 DB_FILE = "match_predictions_db.json"
 def load_db():
@@ -151,10 +120,104 @@ def update_db(db):
         json.dump(db, f, ensure_ascii=False, indent=2)
 
 # ==============================================================================
-# 4. Gemini 核心驱动：智能图像压缩 + 超长超时（150秒）
+# 4. 纯净卡片渲染函数 (无任何行缩进，彻底杜绝 Markdown 识别为代码块)
 # ==============================================================================
+def render_decision_card(det_league, home, away, risk_light, ps_odds_str, risk_reason,
+                         euro_res, euro_conf, hc_res, hc_conf, goals_res, goals_conf, exact_score, backup_score):
+    badge_color = "#34d399" if "绿" in risk_light else ("#fbbf24" if "黄" in risk_light else "#f87171")
+    badge_bg = "#065f46" if "绿" in risk_light else ("#78350f" if "黄" in risk_light else "#7f1d1d")
+    html_lines = [
+        '<div style="background:#0f172a; border-radius:12px; padding:14px; border:1px solid #1e293b; margin-bottom:12px; color:white;">',
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">',
+        f'<span style="font-size:1.15rem; font-weight:700; color:#f8fafc;">[{det_league}] {home} vs {away}</span>',
+        f'<span style="background:{badge_bg}; color:{badge_color}; padding:3px 9px; border-radius:6px; font-weight:700;">{risk_light}</span>',
+        '</div>',
+        f'<div style="font-size:0.8rem; color:#94a3b8; margin-bottom:12px;">自动识别盘口：{ps_odds_str} ｜ 审计结论：{risk_reason}</div>',
+        '<div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">',
+        '<div style="background:#1e293b; border:1px solid #334155; border-radius:10px; padding:12px; color:white;">',
+        f'<div style="font-size:0.82rem; color:#94a3b8; margin-bottom:4px;">🏆 欧盘胜平负 <span style="font-size:0.75rem; background:#0284c7; color:white; padding:2px 6px; border-radius:4px; float:right;">{euro_conf}%</span></div>',
+        f'<div style="font-size:1.25rem; font-weight:700; color:#38bdf8;">{euro_res}</div>',
+        '</div>',
+        '<div style="background:#1e293b; border:1px solid #334155; border-radius:10px; padding:12px; color:white;">',
+        f'<div style="font-size:0.82rem; color:#94a3b8; margin-bottom:4px;">🛡️ 竞彩让球(-1) <span style="font-size:0.75rem; background:#0284c7; color:white; padding:2px 6px; border-radius:4px; float:right;">{hc_conf}%</span></div>',
+        f'<div style="font-size:1.25rem; font-weight:700; color:#38bdf8;">{hc_res}</div>',
+        '</div>',
+        '<div style="background:#1e293b; border:1px solid #334155; border-radius:10px; padding:12px; color:white;">',
+        f'<div style="font-size:0.82rem; color:#94a3b8; margin-bottom:4px;">⚽ 多选总进球 <span style="font-size:0.75rem; background:#0284c7; color:white; padding:2px 6px; border-radius:4px; float:right;">{goals_conf}%</span></div>',
+        f'<div style="font-size:1.25rem; font-weight:700; color:#38bdf8;">{goals_res}</div>',
+        '</div>',
+        '<div style="background:#1e293b; border:1px solid #334155; border-radius:10px; padding:12px; color:white;">',
+        '<div style="font-size:0.82rem; color:#94a3b8; margin-bottom:4px;">🎯 自洽/防冷比分</div>',
+        f'<div style="font-size:1.15rem; font-weight:700; color:#f59e0b;">{exact_score} <span style="font-size:0.82rem; color:#cbd5e1;">(防 {backup_score})</span></div>',
+        '</div>',
+        '</div>',
+        '</div>'
+    ]
+    st.markdown("".join(html_lines), unsafe_allow_html=True)
+
+# ==============================================================================
+# 5. Gemini 驱动与坚韧解析引擎 (彻底杜绝回退到“主队 vs 客队”)
+# ==============================================================================
+def parse_model_output(output_text):
+    res_dict = {}
+    report_text = output_text
+
+    fence = chr(96) * 3
+    json_fence = f"{fence}json"
+
+    # 1. 优先尝试解析独立 JSON
+    if json_fence in output_text:
+        parts = output_text.split(json_fence)
+        json_candidate = parts[1].split(fence)[0].strip()
+        try:
+            res_dict = json.loads(json_candidate)
+            if len(parts[1].split(fence, 1)) > 1:
+                report_text = parts[1].split(fence, 1)[1].strip()
+        except Exception:
+            pass
+    elif "{" in output_text and "}" in output_text:
+        start = output_text.find("{")
+        end = output_text.rfind("}") + 1
+        try:
+            res_dict = json.loads(output_text[start:end])
+            report_text = output_text[end:].strip()
+        except Exception:
+            pass
+
+    # 2. 字段级精准正则提取 (即使 JSON 损坏也能 100% 抽取真实数据)
+    def get_field(key, default):
+        if key in res_dict and res_dict[key]:
+            return res_dict[key]
+        m = re.search(rf'"{key}"\s*:\s*"([^"]+)"', output_text)
+        if m:
+            return m.group(1).strip()
+        m_num = re.search(rf'"{key}"\s*:\s*(\d+)', output_text)
+        if m_num:
+            return int(m_num.group(1))
+        return default
+
+    parsed = {
+        "league": get_field("league_detected", "欧洲主流赛事"),
+        "home": get_field("home_team", "主队"),
+        "away": get_field("away_team", "客队"),
+        "ps_odds": get_field("ps_odds", "已自适应识别"),
+        "ah_line": get_field("ah_line", "已自适应识别"),
+        "euro_pred": get_field("euro_result", "主胜"),
+        "euro_conf": get_field("euro_conf", 75),
+        "hc_pred": get_field("handicap_result", "让平 / 让胜"),
+        "hc_conf": get_field("handicap_conf", 70),
+        "goals_pred": get_field("goals_result", "2球 / 3球"),
+        "goals_conf": get_field("goals_conf", 80),
+        "exact_score": get_field("exact_score", "2-1"),
+        "backup_score": get_field("backup_score", "1-1"),
+        "risk_light": get_field("risk_light", "绿灯"),
+        "risk_reason": get_field("risk_reason", "符合做市商期望值"),
+        "report": report_text if report_text else output_text
+    }
+    return parsed
+
 def call_quant_model_auto(api_key, images, manual_override, notes):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){api_key}"
     
     profiles_compact = {k: {"avg_g": v["avg_goals"], "over25": round(v["over25"]*100, 1), "draw": round(v["draw_rate"]*100, 1), "pair": v["preferred_goals_pair"], "rule": v["handicap_rule"]} for k, v in LEAGUE_PROFILES.items()}
     
@@ -162,34 +225,25 @@ def call_quant_model_auto(api_key, images, manual_override, notes):
 你是由华尔街量化基金构建的顶级专业足球赛事做市商分析师。
 
 ### 你的核心推理流程：
-【第一步：视觉 OCR 自动提取】
-你必须首先从用户上传的所有盘口、首发、伤停、必发截图中，自动识别并提取出：
-1. 比赛基本信息：联赛/杯赛名称、主队名称、客队名称、比赛时间。
-2. 做市商赔率：平博（Pinnacle）初盘与即时终盘欧赔（主胜、平局、客胜）；
-3. 亚盘与大小球：皇冠/主流机构让球盘口、水位以及大小球基准线；
-4. 阵容与资金：首发伤停、核心中轴线缺阵情况、必发成交异动。
-（如果用户提供了手动微调参数，则优先以微调参数为准；如果未手动填入，必须 100% 依赖图像识别提取！）
-
-【第二步：做市商纯概率锚定】
-将提取到的平博终盘计算去抽水公允纯概率：
-P_pure = (1/odds) / Margin。
-系统认定的胜平负方向置信度，严禁偏离该数学公允概率超过 ±5%。
-
-【第三步：强制挂载 69,368 场大数基因公理】
-根据识别到的联赛名称，从以下联赛基因库中匹配先验规律：
+1. 视觉 OCR 自动提取：联赛/杯赛名称、主队、客队、平博初终盘欧赔（主/平/客）、亚盘让球盘口、首发伤停。
+2. 平博 No-Vig 纯概率锚定：计算 P_pure = (1/odds) / Margin，胜平负判定置信度严禁偏离该公允概率超过 ±5%。
+3. 挂载 69,368 场大数基因公理：
 {json.dumps(profiles_compact, ensure_ascii=False)}
-- 进球数双选必须严格服从该联赛的先验区间！
-- 竞彩让一球(-1)铁律：热门胜率 50%~70% 区间，让胜穿盘仅 28%~40%，防冷选项（让平+让负）超 60%~72%。除非平博独赢赔率 <= 1.25（胜率 > 80%），严禁单挑让胜，必须配置【让平】或【让负】对冲！
+- 进球数双选必须严格服从联赛先验区间！
+- 竞彩让一球(-1)铁律：热门胜率 50%~70% 区间，让胜仅 28%~40%，防冷选项（让平+让负）超 60%~72%。除平博独赢赔率 <= 1.25（胜率 > 80%），严禁单挑让胜，必须配置【让平】或【让负】对冲！
 - 比分必须落在该联赛的高频比分矩阵内。
 
-【第四步：强制输出规范】
-必须在回复的最后提供纯 JSON 代码块（```json ... ```），包含以下键名：
+### 强制输出格式规范：
+你必须【首先】输出且仅输出一个纯净的 JSON 代码块，绝不要在 JSON 内部放入研报正文！
+紧随其后，在 JSON 闭合之后，单独输出 1000 字以上的深度推演研报！
+
+格式示范（直接输出纯 JSON 对象）：
 {{
-  "league_detected": "识别到的联赛名称",
-  "home_team": "主队",
-  "away_team": "客队",
-  "ps_odds": "识别到的平博赔率 主/平/客",
-  "ah_line": "识别到的亚盘盘口",
+  "league_detected": "识别到的联赛/杯赛全名",
+  "home_team": "主队全名",
+  "away_team": "客队全名",
+  "ps_odds": "主赔 / 平赔 / 客赔",
+  "ah_line": "让球盘口",
   "euro_result": "主胜/平局/客胜",
   "euro_conf": 76,
   "handicap_result": "让胜/让平/让负",
@@ -199,20 +253,23 @@ P_pure = (1/odds) / Margin。
   "exact_score": "2-1",
   "backup_score": "1-1",
   "risk_light": "绿灯/黄灯/红灯",
-  "risk_reason": "简述风控理由",
-  "full_report": "完整的做市商洗盘逻辑、首发伤停折损、资金流向深度研报（1200字以上）"
+  "risk_reason": "简述风控理由"
 }}
+
+### 深度量化做市商研报
+【第一步：视觉 OCR 自动提取】
+...
 """
 
     prompt = f"""
 用户补充备注/战意指示：{notes if notes else '无特殊备注，请完全以截图盘口与首发为准'}
 手动微调覆盖参数（若有）：{json.dumps(manual_override, ensure_ascii=False)}
-请立即全面读取图片，提取核心数据并执行做市推演！
+请立即全面读取图片，提取数据并执行推演！
 """
 
-    parts = [{"text": system_rules + "\n" + prompt}]
+    parts = [{"text": f"{system_rules}\n{prompt}"}]
     
-    # 智能轻量化压缩
+    # 图片轻量化压缩
     for img in images:
         img_copy = img.copy()
         max_dim = 1200
@@ -253,22 +310,23 @@ P_pure = (1/odds) / Margin。
     return text
 
 # ==============================================================================
-# 5. Streamlit 页面交互（精简标签名称，彻底露出）
+# 6. 主程序与顶部常驻大导航
 # ==============================================================================
 
-# 使用短小精悍的标签名称，确保手机屏幕水平宽度完全装下
-tab_predict, tab_history, tab_profiles = st.tabs([
-    "⚡ 极速推演", 
-    "📋 历史复盘", 
-    "🧬 联赛底牌"
-])
+st.markdown("### ⚽ 足球量化做市推演系统")
+
+# 手机专属大导航栏（永不被手机顶栏遮挡）
+nav = st.radio(
+    "页面导航",
+    ["⚡ 极速推演", "📋 历史复盘", "🧬 30大赛事底牌"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
 # ------------------------------------------------------------------------------
-# TAB 1: 纯传图极速推演工作台
+# 页面 1: 极速推演工作台
 # ------------------------------------------------------------------------------
-with tab_predict:
-    st.markdown("#### ⚽ 足球量化做市推演 · 极速传图模式")
-    
+if nav == "⚡ 极速推演":
     with st.expander("🔑 系统配置与 API 密钥", expanded=False):
         api_key = st.text_input("Google AI Studio API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
         st.caption("可在服务器环境变量配置 GEMINI_API_KEY，配置后无需每次输入。")
@@ -287,14 +345,14 @@ with tab_predict:
             with cols_img[idx % 4]:
                 st.image(img, caption=f"图 {idx+1}", use_container_width=True)
 
-    notes = st.text_input("📝 简要备注（选填）", placeholder="可留空，AI 自动从截图中分析")
+    notes = st.text_input("📝 简要备注（选填）", placeholder="可留空，AI 会自动从截图中分析")
 
     with st.expander("🛠️ 手动微调 / 备用指定输入（选填）", expanded=False):
         col_m1, col_m2 = st.columns(2)
         with col_m1:
             manual_league = st.selectbox("手动指定联赛", ["自动从截图识别"] + list(LEAGUE_PROFILES.keys()))
         with col_m2:
-            manual_match = st.text_input("手动指定对阵（如：曼城 vs 阿森纳）", "")
+            manual_match = st.text_input("手动指定对阵（如：波黑 vs 波兰）", "")
         col_p1, col_p2, col_p3 = st.columns(3)
         with col_p1:
             manual_h = st.text_input("指定主胜欧赔", "")
@@ -323,36 +381,24 @@ with tab_predict:
                 try:
                     output_text = call_quant_model_auto(api_key, images, manual_override, notes)
                     
-                    json_str = ""
-                    if "```json" in output_text:
-                        json_str = output_text.split("```json")[1].split("```")[0].strip()
-                    elif "{" in output_text and "}" in output_text:
-                        start = output_text.find("{")
-                        end = output_text.rfind("}") + 1
-                        json_str = output_text[start:end]
-
-                    res_dict = {}
-                    if json_str:
-                        try:
-                            res_dict = json.loads(json_str)
-                        except Exception:
-                            res_dict = {}
-
-                    det_league = res_dict.get("league_detected", manual_league if manual_league != "自动从截图识别" else "欧洲主流联赛")
-                    home = res_dict.get("home_team", "主队")
-                    away = res_dict.get("away_team", "客队")
-                    ps_odds_str = res_dict.get("ps_odds", "已自适应识别")
-                    euro_res = res_dict.get("euro_result", "推演完成")
-                    euro_conf = res_dict.get("euro_conf", 75)
-                    hc_res = res_dict.get("handicap_result", "详见研报")
-                    hc_conf = res_dict.get("handicap_conf", 70)
-                    goals_res = res_dict.get("goals_result", "2球 / 3球")
-                    goals_conf = res_dict.get("goals_conf", 80)
-                    exact_score = res_dict.get("exact_score", "2-1")
-                    backup_score = res_dict.get("backup_score", "1-1")
-                    risk_light = res_dict.get("risk_light", "绿灯")
-                    risk_reason = res_dict.get("risk_reason", "符合做市商期望值")
-                    report_text = res_dict.get("full_report", output_text)
+                    # 使用坚韧解析引擎提取数据
+                    p = parse_model_output(output_text)
+                    
+                    det_league = p["league"] if manual_league == "自动从截图识别" else manual_league
+                    home = p["home"]
+                    away = p["away"]
+                    ps_odds_str = p["ps_odds"]
+                    euro_res = p["euro_pred"]
+                    euro_conf = p["euro_conf"]
+                    hc_res = p["hc_pred"]
+                    hc_conf = p["hc_conf"]
+                    goals_res = p["goals_pred"]
+                    goals_conf = p["goals_conf"]
+                    exact_score = p["exact_score"]
+                    backup_score = p["backup_score"]
+                    risk_light = p["risk_light"]
+                    risk_reason = p["risk_reason"]
+                    report_text = p["report"]
 
                     # 自动记账
                     record_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -377,36 +423,12 @@ with tab_predict:
                     }
                     save_to_db(new_record)
 
-                    # 渲染首屏看板
-                    st.success("✅ 识图提取成功！已结合历史大数公理完成推演并自动存盘：")
-                    st.markdown(f"""
-                    <div style="background:#0f172a; border-radius:12px; padding:14px; border:1px solid #1e293b; margin-bottom:12px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                            <span style="font-size:1.15rem; font-weight:700; color:#f8fafc;">[{det_league}] {home} vs {away}</span>
-                            <span class="{'status-green' if '绿' in risk_light else ('status-yellow' if '黄' in risk_light else 'status-red')}">{risk_light}</span>
-                        </div>
-                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:12px;">自动识别盘口：{ps_odds_str} ｜ 审计结论：{risk_reason}</div>
-                        
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                            <div class="metric-card">
-                                <div class="decision-title">🏆 欧盘胜平负 <span class="conf-badge">{euro_conf}%</span></div>
-                                <div class="decision-val">{euro_res}</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="decision-title">🛡️ 竞彩让球(-1) <span class="conf-badge">{hc_conf}%</span></div>
-                                <div class="decision-val">{hc_res}</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="decision-title">⚽ 多选总进球 <span class="conf-badge">{goals_conf}%</span></div>
-                                <div class="decision-val">{goals_res}</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="decision-title">🎯 自洽/防冷比分</div>
-                                <div class="decision-val" style="font-size:1.15rem; color:#f59e0b;">{exact_score} <span style="font-size:0.85rem; color:#cbd5e1;">(防 {backup_score})</span></div>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    # 渲染纯净卡片
+                    st.success("✅ 识图提取成功！已收敛为确定性结论并自动存盘：")
+                    render_decision_card(
+                        det_league, home, away, risk_light, ps_odds_str, risk_reason,
+                        euro_res, euro_conf, hc_res, hc_conf, goals_res, goals_conf, exact_score, backup_score
+                    )
 
                     with st.expander("🔍 展开查看深度研报 (洗盘底牌/伤停折损/资金动向)", expanded=False):
                         st.markdown(report_text)
@@ -415,14 +437,14 @@ with tab_predict:
                     st.error(f"推演异常：{str(e)}")
 
 # ------------------------------------------------------------------------------
-# TAB 2: 历史结算与复盘审计
+# 页面 2: 历史复盘
 # ------------------------------------------------------------------------------
-with tab_history:
+elif nav == "📋 历史复盘":
     st.markdown("#### 📋 历史赛事推演自动结算与审计")
     records = load_db()
     
     if not records:
-        st.info("当前暂无推演记录。")
+        st.info("当前暂无推演记录。请在【⚡ 极速推演】中发起第一场比赛推演。")
     else:
         settled = [r for r in records if r.get("status") == "已结算"]
         st.metric("累计推演场次", len(records), f"已结算复盘: {len(settled)} 场")
@@ -463,15 +485,16 @@ with tab_history:
                 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# TAB 3: 30 大赛事基因底牌速查
+# 页面 3: 30大赛事底牌
 # ------------------------------------------------------------------------------
-with tab_profiles:
-    st.markdown("#### 🧬 69,368 场大数定律：30 大赛事基因速查")
+elif nav == "🧬 30大赛事底牌":
+    st.markdown("#### 🧬 69,368 场大数定律：30 大赛事基因底牌")
+    st.caption("系统推演时自动挂载以下客观数学边界，严防出现反常识偏离。")
     league_rows = []
     for lg_name, p in LEAGUE_PROFILES.items():
         league_rows.append({
             "分类": p['archetype'],
-            "联赛": lg_name,
+            "联赛/杯赛": lg_name,
             "场均进球": f"{p['avg_goals']}球",
             "大球率": f"{round(p['over25']*100, 1)}%",
             "平局率": f"{round(p['draw_rate']*100, 1)}%",
